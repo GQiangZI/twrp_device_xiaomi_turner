@@ -85,6 +85,7 @@ jobs:
             esac | (cd $W/vr && cpio -idm --quiet --no-absolute-filenames)
           done
           test -f $W/vr/lib/modules/modules.load
+          mkdir -p prebuilt
           cp $W/vb/dtb prebuilt/dtb
           echo "::notice title=DTB size::$(stat -c%s prebuilt/dtb) bytes (update BOARD_DTB_SIZE in BoardConfig.mk to match)"
           # every module in the tree is listed in the stock modules.load*, so swap the whole set
