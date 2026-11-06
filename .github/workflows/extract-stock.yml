@@ -1,0 +1,131 @@
+name: Extract stock blobs (turner)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'HyperOS version (used for the branch name)'
+      rom_url:
+        description: 'Official recovery ROM (.zip with payload.bin)'
+      rom_md5:
+        description: 'md5 of the ROM zip'
+      boot_sha256:
+        description: 'sha256 of boot.img dumped from the tablet; proves the ROM is the firmware on the device. "none" when rom_md5 was computed on the tablet from the package its updater downloaded'
+  push:
+    branches: [main]
+    paths: ['.github/workflows/extract-stock.yml']
+
+permissions:
+  contents: write
+
+env:
+  VERSION: ${{ inputs.version || 'OS3.0.310.0.WAOCNXM' }}
+  ROM_URL: ${{ inputs.rom_url || 'https://bigota.d.miui.com/OS3.0.310.0.WAOCNXM/turner-ota_full-OS3.0.310.0.WAOCNXM-user-16.0-ec27187eb7.zip' }}
+  ROM_MD5: ${{ inputs.rom_md5 || 'ec27187eb7bd6cab587f70cf1dfec582' }}
+  BOOT_SHA256: ${{ inputs.boot_sha256 || 'none' }}
+
+jobs:
+  extract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for i in 1 2 3; do sudo apt-get -o Acquire::Retries=3 update && break; sleep 15; done
+          sudo apt-get -o Acquire::Retries=3 install -y aria2 erofs-utils lz4 cpio
+          gh release download -R ssut/payload-dumper-go -p '*linux_amd64.tar.gz' -O pdg.tgz
+          mkdir -p ~/tools && tar -xzf pdg.tgz -C ~/tools && rm pdg.tgz
+          git clone -q --depth 1 https://android.googlesource.com/platform/system/tools/mkbootimg ~/tools/mkbootimg
+
+      - name: Download ROM and verify it is the tablet's firmware
+        run: |
+          mkdir -p $RUNNER_TEMP/work && cd $RUNNER_TEMP/work
+          # one CDN alone is slow for 7 GB; pull segments from all official mirrors in parallel
+          path=${ROM_URL#https://*/}
+          aria2c -q -x16 -s16 -k4M --max-tries=5 --retry-wait=10 --file-allocation=none -o rom.zip "$ROM_URL" \
+            "https://cdnorg.d.miui.com/$path" "https://bkt-sgp-miui-ota-update-alisgp.oss-ap-southeast-1.aliyuncs.com/$path"
+          echo "$ROM_MD5  rom.zip" | md5sum -c -
+          unzip -q rom.zip payload.bin && rm rom.zip
+          ~/tools/payload-dumper-go -p boot,init_boot,vendor_boot,vendor -o img payload.bin
+          rm payload.bin
+          # the ROM must be byte-identical to what runs on the device, else its blobs are wrong
+          if [ "$BOOT_SHA256" = none ]; then
+            # not on the device yet: rom_md5 came from the tablet's own downloaded package instead
+            echo "::notice title=Proof::rom_md5 from the package on the tablet; boot.img sha256 $(sha256sum img/boot.img | cut -c1-64)"
+          else
+            echo "$BOOT_SHA256  img/boot.img" | sha256sum -c -
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stock-images-${{ env.VERSION }}
+          path: |
+            ${{ runner.temp }}/work/img/boot.img
+            ${{ runner.temp }}/work/img/init_boot.img
+            ${{ runner.temp }}/work/img/vendor_boot.img
+
+      - name: Apply vendor_boot (dtb, modules, first-stage fstab)
+        run: |
+          W=$RUNNER_TEMP/work
+          python3 ~/tools/mkbootimg/unpack_bootimg.py --boot_img $W/img/vendor_boot.img --out $W/vb > $W/vb.txt
+          echo "::notice title=vendor_boot header::$(grep -iE 'version|page size|address|cmdline|dtb size|ramdisk' $W/vb.txt | tr '\n' ';')"
+          mkdir -p $W/vr
+          for f in $W/vb/vendor_ramdisk*; do
+            case "$(head -c4 "$f" | od -An -tx1 | tr -d ' ')" in
+              02214c18) lz4 -dc "$f" ;;
+              1f8b*) gzip -dc "$f" ;;
+              *) cat "$f" ;;
+            esac | (cd $W/vr && cpio -idm --quiet --no-absolute-filenames)
+          done
+          test -f $W/vr/lib/modules/modules.load
+          cp $W/vb/dtb prebuilt/dtb
+          echo "::notice title=DTB size::$(stat -c%s prebuilt/dtb) bytes (update BOARD_DTB_SIZE in BoardConfig.mk to match)"
+          # every module in the tree is listed in the stock modules.load*, so swap the whole set
+          rm -rf recovery/root/lib/modules && mkdir -p recovery/root/lib/modules
+          cp -a $W/vr/lib/modules/. recovery/root/lib/modules/
+          # first-stage ramdisk: take the whole stock set (this tree starts empty)
+          rm -rf recovery/root/first_stage_ramdisk && mkdir -p recovery/root/first_stage_ramdisk
+          cp -a $W/vr/first_stage_ramdisk/. recovery/root/first_stage_ramdisk/
+          echo "::notice title=Module vermagic::$(strings recovery/root/lib/modules/mitee.ko | grep -m1 '^vermagic=' || echo 'mitee.ko not in stock modules')"
+
+      - name: Apply vendor blobs (TEE, HALs, firmware)
+        run: |
+          W=$RUNNER_TEMP/work
+          sudo fsck.erofs --extract=$W/vd $W/img/vendor.img
+          sudo chown -R "$USER" $W/vd
+          missing=
+          while read -r f; do
+            rel=${f#recovery/root/vendor/}
+            if [ -f "$W/vd/$rel" ]; then cp "$W/vd/$rel" "$f"; else missing+="$rel "; rm -f "$f"; fi
+          done < <(find recovery/root/vendor -type f -not -path 'recovery/root/vendor/etc/*')
+          [ -z "$missing" ] || echo "::warning title=Not in stock vendor (placeholder removed)::$missing"
+          # vendor/etc rc/vintf files are hand-adapted for recovery; report drift, do not overwrite
+          drift=
+          while read -r f; do
+            rel=${f#recovery/root/vendor/}
+            cmp -s "$f" "$W/vd/$rel" || drift+="$rel "
+          done < <(find recovery/root/vendor/etc -type f)
+          [ -z "$drift" ] || echo "::notice title=vendor/etc differs from stock (kept)::$drift"
+          d=$(grep -m1 '^ro.vendor.build.date.utc=' $W/vd/build.prop | cut -d= -f2)
+          [ -n "$d" ] && sed -i -E "s/(build\.date\.utc\", \")[0-9]+/\1$d/" init/init_turner.cpp
+          echo "::notice title=Vendor build date::$d"
+
+      - name: Commit to stock branch
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@users.noreply.github.com
+          printf '%s\n' '# Firmware the device tree blobs (dtb, vendor_boot modules, vendor files) come from.' \
+            '# Written by the "Extract stock blobs" workflow; STOCK_RUN is that run, whose stock-images' \
+            '# artifact (stock vendor_boot) the packaging workflow compares against and ships.' \
+            "VERSION=$VERSION" "STOCK_RUN=$GITHUB_RUN_ID" > .github/firmware.env
+          git add -A
+          git commit -q -m "turner: update stock blobs to $VERSION" -m "dtb, vendor_boot modules, first-stage fstab and vendor blobs extracted from $ROM_URL (md5 $ROM_MD5, boot.img sha256 $BOOT_SHA256)."
+          git push -f origin "HEAD:refs/heads/stock/$VERSION"
+          echo "::notice title=Pushed::stock/$VERSION $(git diff --shortstat HEAD~1)"
