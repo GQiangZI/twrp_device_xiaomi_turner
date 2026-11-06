@@ -1,0 +1,43 @@
+Keep /data/data when wiping Data, and back it up only once
+
+Android 15+ vold bind-mounts /data/data (user 0's CE storage, with its
+fscrypt policy) onto /data/user/0. Restore first wipes Data without media,
+and the recursive wipe removed /data/data while it was still mounted: the
+mount then pointed at a deleted directory, /data/user/0 could not be
+written, and every Data restore stopped at the first app with
+"extractTarFork() process ended with ERROR: 255" (found on the owner's
+turner, 30 Oct 2026). Empty /data/data but keep the directory.
+
+The same bind mount made backups store all app data twice (/data/data and
+/data/user/0). Exclude /data/data; /data/user/0 holds the same files.
+
+Both changes follow OrangeFox's OF_WORKAROUND_BACKUP_BUG (fox_14.1/16.0).
+
+diff --git a/partition.cpp b/partition.cpp
+index ef45ea3..7394195 100755
+--- a/partition.cpp
++++ b/partition.cpp
+@@ -1296,6 +1296,9 @@ void TWPartition::Setup_Data_Media() {
+ 		backup_exclusions.add_absolute_dir("/data/adb/ksu/modules.img"); //After ksu 0.8.x the modules.img file became 1tb, which is inhibiting the execution of backups
+ 		wipe_exclusions.add_absolute_dir(Mount_Point + "/misc/vold"); // adopted storage keys
+ 		ExcludeAll(Mount_Point + "/system/storage.xml");
++		// Android 15+: vold bind-mounts /data/data onto /data/user/0, so the same app data would be
++		// archived twice; keep the /data/user/0 copy (from OrangeFox OF_WORKAROUND_BACKUP_BUG)
++		backup_exclusions.add_absolute_dir("/data/data");
+ 
+ 		backup_exclusions.add_absolute_dir("/data/system/users/0/package-restrictions.xml");
+ 
+@@ -2635,7 +2638,12 @@ bool TWPartition::Wipe_Data_Without_Wiping_Media_Func(const string& parent __unu
+ 					closedir(d);
+ 					return false;
+ 				}
+-				rmdir(dir.c_str());
++				// keep /data/data itself: it is bind-mounted on /data/user/0 and holds user 0's CE
++				// policy; removing it left restore unable to write /data/user/0 (extractTarFork 255)
++				if (dir == "/data/data/")
++					LOGINFO("kept '%s' (emptied)\n", dir.c_str());
++				else
++					rmdir(dir.c_str());
+ 			} else if (de->d_type == DT_REG || de->d_type == DT_LNK || de->d_type == DT_FIFO || de->d_type == DT_SOCK) {
+ 				if (unlink(dir.c_str()) != 0)
+ 					LOGINFO("Unable to unlink '%s': %s\n", dir.c_str(), strerror(errno));

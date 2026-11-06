@@ -1,0 +1,168 @@
+Unlock with the AIDL Gatekeeper and other protectors
+
+On turner (HyperOS 3, Android 16) TWRP failed every pattern:
+- The active protector uses Weaver: android.hardware.weaver-service.nxp on
+  the NXP eSE. It talks through OMAPI (android.se.omapi), a service of the
+  SecureElement app, so it cannot run in recovery.
+- The phone also keeps a Gatekeeper protector (.pwd with a 58-byte handle,
+  plus .secdis) for the same synthetic password. Gatekeeper is AIDL only
+  (gatekeeper-service.mitee), but TWRP only spoke the HIDL @1.0 HAL.
+
+Use the AIDL Gatekeeper when no HIDL one is registered. When the active
+protector fails, try every protector that has Gatekeeper data.
+
+unwrapSyntheticPasswordBlob re-read the active sp-handle from locksettings.db
+for the keystore alias, so it decrypted the fallback protector's spblob with
+the Weaver protector's key and finish() failed. Use the handle we are trying.
+
+diff --git a/Android.bp b/Android.bp
+index 200eb67..5f31246 100644
+--- a/Android.bp
++++ b/Android.bp
+@@ -176,6 +176,7 @@ cc_library_static {
+     shared_libs: [
+         "android.hardware.confirmationui@1.0",
+         "android.hardware.gatekeeper@1.0",
++        "android.hardware.gatekeeper-V1-ndk",
+         "android.hardware.health.storage@1.0",
+         "android.hardware.health.storage-V1-ndk",
+         "android.hardware.keymaster@4.1",
+diff --git a/Decrypt.cpp b/Decrypt.cpp
+index 0a5afb0..c982445 100755
+--- a/Decrypt.cpp
++++ b/Decrypt.cpp
+@@ -57,6 +57,7 @@
+ #include <aidl/android/system/keystore2/IKeystoreService.h>
+ #include <aidl/android/system/keystore2/ResponseCode.h>
+ #include <android/hardware/gatekeeper/1.0/IGatekeeper.h>
++#include <aidl/android/hardware/gatekeeper/IGatekeeper.h>
+ 
+ #include <binder/IServiceManager.h>
+ #include <binder/IPCThreadState.h>
+@@ -524,8 +525,9 @@ namespace keystore {
+ 			// printf("iv: "); output_hex((const unsigned char*)iv, 12); printf("\n");
+ 
+ 			KeystoreInfo keystore_info;
+-			std::string handle = keystore_info.getHandle(user_id);
+-			std::string keystore_alias = keystore_info.getAlias(handle);
++			// Decrypt the protector we are actually trying (handle_str), not the active sp-handle: a
++			// Weaver protector can be active while we fall back to this Gatekeeper one (Decrypt_User_Other_Protectors)
++			std::string keystore_alias = keystore_info.getAlias(handle_str);
+ 			int32_t error_code;
+ 			unsigned char* cipher_text = (unsigned char*)byteptr + 12; // The cipher text comes immediately after the IV
+ 			std::string cipher_text_str(byteptr, byteptr + spblob_data.size() - 14);
+@@ -640,6 +642,44 @@ userid_t fakeUid(const userid_t uid) {
+     return 100000 + uid;
+ }
+ 
++// Devices launched with Android 13+ (e.g. HyperOS) only have the AIDL Gatekeeper HAL
++static std::shared_ptr<aidl::android::hardware::gatekeeper::IGatekeeper> Aidl_Gatekeeper() {
++	const std::string name = std::string(aidl::android::hardware::gatekeeper::IGatekeeper::descriptor) + "/default";
++	ndk::SpAIBinder binder(AServiceManager_checkService(name.c_str()));
++	return binder.get() ? aidl::android::hardware::gatekeeper::IGatekeeper::fromBinder(binder) : nullptr;
++}
++
++// AIDL version of the HIDL verify + addAuthToken in Decrypt_User_Synth_Pass
++static bool Aidl_Gatekeeper_Verify(const userid_t user_id, const password_data_struct& pwd, const unsigned char* password_token) {
++	auto gk = Aidl_Gatekeeper();
++	if (!gk || pwd.handle_len <= 0) {
++		printf("no AIDL gatekeeper or no password handle supplied\n");
++		return false;
++	}
++	void* gk_pwd_token = PersonalizedHashBinary(PERSONALIZATION_USER_GK_AUTH, (const char*)password_token, PASSWORD_TOKEN_SIZE);
++	if (!gk_pwd_token) {
++		printf("malloc error getting gatekeeper_key\n");
++		return false;
++	}
++	std::vector<uint8_t> handle((const uint8_t*)pwd.password_handle, (const uint8_t*)pwd.password_handle + pwd.handle_len);
++	std::vector<uint8_t> key((const uint8_t*)gk_pwd_token, (const uint8_t*)gk_pwd_token + SHA512_DIGEST_LENGTH);
++	free(gk_pwd_token);
++	aidl::android::hardware::gatekeeper::GatekeeperVerifyResponse rsp;
++	auto status = gk->verify(fakeUid(user_id), 0 /* challenge */, handle, key, &rsp);
++	if (!status.isOk() || rsp.statusCode < aidl::android::hardware::gatekeeper::IGatekeeper::STATUS_OK) {
++		printf("AIDL GateKeeper verify failed: %s, code %d, retry after %d ms\n", status.getDescription().c_str(), rsp.statusCode, rsp.timeoutMs);
++		return false;
++	}
++	printf("GateKeeper status ok\n");
++	ndk::SpAIBinder authz_binder(AServiceManager_getService("android.security.authorization"));
++	auto authz = aidl::android::security::authorization::IKeystoreAuthorization::fromBinder(authz_binder);
++	if (!authz || !authz->addAuthToken(rsp.hardwareAuthToken).isOk()) {
++		printf("error: could not add auth token to keystore\n");
++		return false;
++	}
++	return true;
++}
++
+ bool Is_Weaver(const std::string& spblob_path, const std::string& handle_str) {
+ 	printf("Is_Weaver\n");
+ 	std::string weaver_file = spblob_path + handle_str + ".weaver";
+@@ -678,7 +718,7 @@ bool Decrypt_CE_storage(const userid_t user_id, const std::string& secret) {
+ 
+ // /* Decrypt_User_Synth_Pass is the TWRP C++ equivalent to spBasedDoVerifyCredential
+ //  * https://android.googlesource.com/platform/frameworks/base/+/android-8.0.0_r23/services/core/java/com/android/server/locksettings/LockSettingsService.java#1998 */
+-bool Decrypt_User_Synth_Pass(const userid_t user_id, const std::string& Password) {
++bool Decrypt_User_Synth_Pass(const userid_t user_id, const std::string& Password, std::string handle_str = "") {
+ 	printf("Attempting to decrypt user's synthetic password\n");
+ 	bool retval = false;
+ 	void* weaver_key = NULL;
+@@ -697,7 +737,8 @@ bool Decrypt_User_Synth_Pass(const userid_t user_id, const std::string& Password
+ 	long handle = 0;
+ 	// Get the handle: https://android.googlesource.com/platform/frameworks/base/+/android-8.0.0_r23/services/core/java/com/android/server/locksettings/LockSettingsService.java#2017
+ 	KeystoreInfo keystore_info;
+-	std::string handle_str = keystore_info.getHandle(user_id);
++	if (handle_str.empty())
++		handle_str = keystore_info.getHandle(user_id);
+ 	// Now we begin driving unwrapPasswordBasedSyntheticPassword from: https://android.googlesource.com/platform/frameworks/base/+/android-8.0.0_r23/services/core/java/com/android/server/locksettings/SyntheticPasswordManager.java#758
+ 	// First we read the password data which contains scrypt parameters
+ 	// printf("pwd N %i R %i P %i salt ", pwd.scryptN, pwd.scryptR, pwd.scryptP); output_hex((char*)pwd.salt, pwd.salt_len); printf("\n");
+@@ -787,7 +828,10 @@ bool Decrypt_User_Synth_Pass(const userid_t user_id, const std::string& Password
+ 		}
+ 		memcpy((void*)&application_id[0], (void*)&password_token[0], PASSWORD_TOKEN_SIZE);
+ 		memcpy((void*)&application_id[PASSWORD_TOKEN_SIZE], secdiscardable, SHA512_DIGEST_LENGTH);
+-		if (Password != "!") {
++		if (Password != "!" && Aidl_Gatekeeper()) {
++			if (!Aidl_Gatekeeper_Verify(user_id, pwd, &password_token[0]))
++				return Free_Return(retval, weaver_key, &pwd);
++		} else if (Password != "!") {
+ 			int ret = -1;
+ 			bool request_reenroll = false;
+ 			android::sp<android::hardware::gatekeeper::V1_0::IGatekeeper> gk_device;
+@@ -876,6 +920,29 @@ bool Decrypt_User_Synth_Pass(const userid_t user_id, const std::string& Password
+ 	return Free_Return(retval, weaver_key, &pwd);
+ }
+ 
++// HyperOS keeps the LSKF in a Weaver protector backed by the NXP eSE, reached through OMAPI,
++// which recovery cannot run. It also keeps a Gatekeeper protector for the same synthetic password,
++// so try every protector that has Gatekeeper data (.secdis) when the active one fails.
++static bool Decrypt_User_Other_Protectors(const userid_t user_id, const std::string& Password) {
++	const std::string dir = "/data/system_de/" + std::to_string(user_id) + "/spblob/";
++	std::unique_ptr<DIR, int (*)(DIR*)> d(opendir(dir.c_str()), closedir);
++	if (!d)
++		return false;
++	const std::string suffix = ".secdis";
++	while (dirent* de = readdir(d.get())) {
++		std::string id = de->d_name;
++		if (id.size() <= suffix.size() || id.compare(id.size() - suffix.size(), suffix.size(), suffix) != 0)
++			continue;
++		id.resize(id.size() - suffix.size());
++		// file names are %016x, keystore aliases use %x
++		id.erase(0, std::min(id.find_first_not_of('0'), id.size() - 1));
++		printf("Trying protector '%s'\n", id.c_str());
++		if (Decrypt_User_Synth_Pass(user_id, Password, id))
++			return true;
++	}
++	return false;
++}
++
+ extern "C" int Get_Password_Type(const userid_t user_id, std::string& filename) {
+ 	struct stat st;
+ 	char spblob_path_char[PATH_MAX];
+@@ -956,7 +1023,7 @@ extern "C" bool Decrypt_User(const userid_t user_id, const std::string& Password
+ 	}
+ 	if (stat("/data/system_de/0/spblob", &st) == 0) {
+ 		printf("Using synthetic password method\n");
+-		return Decrypt_User_Synth_Pass(user_id, Password);
++		return Decrypt_User_Synth_Pass(user_id, Password) || Decrypt_User_Other_Protectors(user_id, Password);
+ 	}
+ 	// printf("password filename is '%s'\n", filename.c_str());
+ 	if (stat(filename.c_str(), &st) != 0) {

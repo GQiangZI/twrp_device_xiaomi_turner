@@ -1,0 +1,19 @@
+Drop the source revision from the startup line
+
+The TWRP screen showed "Starting TWRP 3.7.1_14-Xiaomi_14T_Pro-426b7477-dirty".
+The hash is the bootable/recovery commit, and "-dirty" only says that these
+patches were applied. To users it looks like random text.
+
+diff --git a/twrp.cpp b/twrp.cpp
+index b257780d..360c5150 100644
+--- a/twrp.cpp
++++ b/twrp.cpp
+@@ -381,7 +381,7 @@ int main(int argc, char **argv) {
+ #endif
+ 
+ 	time_t StartupTime = time(NULL);
+-	printf("Starting TWRP %s-%s on %s (pid %d)\n", TW_VERSION_STR, TW_GIT_REVISION, ctime(&StartupTime), getpid());
++	printf("Starting TWRP %s on %s (pid %d)\n", TW_VERSION_STR, ctime(&StartupTime), getpid());
+ 
+ 	// Load default values to set DataManager constants and handle ifdefs
+ 	DataManager::SetDefaultValues();
