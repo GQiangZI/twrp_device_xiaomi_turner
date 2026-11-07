@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<manifest>
+  <!-- Local manifest for turner TWRP builds on a Linux runner.
+       twrp-default.xml already includes remove-minimal.xml (605 removals);
+       these are the surviving prebuilts/* that a recovery ramdisk never uses.
+       If a build complains about a missing prebuilt, delete that line. -->
+  <!-- macOS / Windows cross toolchains -->
+  <remove-project name="platform/prebuilts/clang/host/darwin-x86" />
+  <remove-project name="platform/prebuilts/go/darwin-x86" />
+  <remove-project name="platform/prebuilts/bazel/darwin-x86_64" />
+  <remove-project name="platform/prebuilts/gcc/linux-x86/host/x86_64-w64-mingw32-4.8" />
+  <!-- emulator / VM images -->
+  <remove-project name="platform/prebuilts/android-emulator" />
+  <remove-project name="platform/prebuilts/qemu-kernel" />
+  <!-- ABI dumps + old VNDK snapshots -->
+  <remove-project name="platform/prebuilts/abi-dumps/ndk" />
+  <remove-project name="platform/prebuilts/abi-dumps/platform" />
+  <remove-project name="platform/prebuilts/abi-dumps/vndk" />
+  <remove-project name="platform/prebuilts/vndk/v30" />
+  <remove-project name="platform/prebuilts/vndk/v31" />
+  <remove-project name="platform/prebuilts/vndk/v32" />
+  <remove-project name="platform/prebuilts/vndk/v33" />
+  <remove-project name="platform/prebuilts/vndk/v34" />
+  <!-- mainline module SDKs -->
+  <remove-project name="platform/prebuilts/module_sdk/art" />
+  <remove-project name="platform/prebuilts/module_sdk/AdServices" />
+  <remove-project name="platform/prebuilts/module_sdk/AppSearch" />
+  <remove-project name="platform/prebuilts/module_sdk/Bluetooth" />
+  <remove-project name="platform/prebuilts/module_sdk/conscrypt" />
+  <remove-project name="platform/prebuilts/module_sdk/ConfigInfrastructure" />
+  <remove-project name="platform/prebuilts/module_sdk/Connectivity" />
+  <remove-project name="platform/prebuilts/module_sdk/CrashRecovery" />
+  <remove-project name="platform/prebuilts/module_sdk/DeviceLock" />
+  <remove-project name="platform/prebuilts/module_sdk/HealthFitness" />
+  <remove-project name="platform/prebuilts/module_sdk/IPsec" />
+  <remove-project name="platform/prebuilts/module_sdk/Media" />
+  <remove-project name="platform/prebuilts/module_sdk/MediaProvider" />
+  <remove-project name="platform/prebuilts/module_sdk/Nfc" />
+  <remove-project name="platform/prebuilts/module_sdk/OnDevicePersonalization" />
+  <remove-project name="platform/prebuilts/module_sdk/Permission" />
+  <remove-project name="platform/prebuilts/module_sdk/Profiling" />
+  <remove-project name="platform/prebuilts/module_sdk/RemoteKeyProvisioning" />
+  <remove-project name="platform/prebuilts/module_sdk/Scheduling" />
+  <remove-project name="platform/prebuilts/module_sdk/SdkExtensions" />
+  <remove-project name="platform/prebuilts/module_sdk/StatsD" />
+  <remove-project name="platform/prebuilts/module_sdk/Uwb" />
+  <remove-project name="platform/prebuilts/module_sdk/Wifi" />
+  <!-- NEVER remove these (needed to build recovery):
+       prebuilts/clang/host/linux-x86, build-tools, clang-tools, rust,
+       go/linux-x86, bazel/linux-x86_64, jdk/jdk21, misc -->
+  <!-- OPTIONAL, higher risk (uncomment only if disk is still tight):
+  <remove-project name="platform/prebuilts/ndk" />
+  <remove-project name="platform/prebuilts/sdk" />
+  <remove-project name="platform/prebuilts/gradle-plugin" />
+  -->
+</manifest>
