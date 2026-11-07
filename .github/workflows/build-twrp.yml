@@ -25,8 +25,16 @@ name: Build TWRP (turner) — YARP base
 # commit/tree history but defer blobs; no `shallow` file exists, so the
 # INT_MAX branch can never fire and old prebuilt binaries never land on
 # disk. REPO_ALLOW_SHALLOW=0 is a belt-and-braces fallback.
-# Also: slim local manifest drops ~30 unused prebuilts; maximize-build-
-# space gets real inputs so the runner has 60G+ instead of ~30G.
+# Also: slim local manifest drops 37 unused prebuilts.
+# v6 (2026-11-08, after run #12): the v5 `with:` inputs on Maximize
+# build space made that step exit 1 in 3m25s (annotation step:4:214).
+# Run #11 proved the bare `easimon/maximize-build-space@master` +
+# `slimhub_actions` Cleanup combo works, so v6 reverts ALL v5 inputs
+# except root-reserve-mb: 4096 -- a pure arithmetic value (no extra
+# commands), which fixes run #10's `/` = 1GiB crash. slimhub_actions
+# already deletes the toolchains, so remove-* on maximize was redundant.
+# v6 also ADDS the missing .github/local_manifests/turner-slim.xml --
+# run #12 never reached Sync, but v5's `cp` would have failed there.
 # Run #10's DISK FULL fix (remove 8G swapfile, -j1, ccache 2G) is kept.
 
 on:
@@ -87,21 +95,37 @@ jobs:
       uses: rokibhasansagar/slimhub_actions@main
 
     - name: Maximize build space
-      # Defaults are hostile: only +7-8G, root-reserve-mb=1024 (so `/`
-      # has ~1GiB -- runner _diag logs, apt and ccache symlinks live on
-      # `/`), swap-size-mb=4096. Removing preinstalled toolchains frees
-      # 60G+. swap-size-mb creates an LVM logical volume (NOT a file on
-      # `/`), so it does NOT repeat the v3 8G-swapfile mistake.
+      # Run #12 (88de5758) added all the v5 `with:` inputs below and this
+      # step exited 1 in 3m25s (`Process completed with exit code 1`,
+      # annotation step:4:214). Job logs need repo admin to download, so
+      # the exact failing command is unknown. Run #11 with the BARE action
+      # (plus the `slimhub_actions` Cleanup above) succeeded through step
+      # 13, so revert to that proven combination.
+      # ONLY root-reserve-mb is kept: default 1024 leaves `/` with ~1GiB,
+      # which is where runner _diag logs, apt and ccache symlinks live --
+      # that is what killed run #10 ("No space left on device"). 4096 is
+      # pure arithmetic (shrinks the LVM image), it runs no extra command.
+      # slimhub_actions already removes dotnet/android/haskell/codeql, so
+      # remove-* on this action was redundant; `remove-docker-images`
+      # (sudo docker image prune) and swap-size-mb=8192 are the two v5
+      # additions most likely to have failed -- both are dropped.
       uses: easimon/maximize-build-space@master
       with:
         root-reserve-mb: 4096
-        temp-reserve-mb: 100
-        swap-size-mb: 8192
-        remove-dotnet: 'true'
-        remove-android: 'true'
-        remove-haskell: 'true'
-        remove-codeql: 'true'
-        remove-docker-images: 'true'
+
+    - name: Verify disk layout
+      # Fast, cheap guard: if Maximize ever half-succeeds again, fail here
+      # with a full df dump instead of 16 minutes later with no logs.
+      run: |
+        df -h / /mnt "$GITHUB_WORKSPACE" || true
+        free -h || true
+        root_avail=$(df -BM --output=avail / | tail -1 | tr -dc '0-9')
+        ws_avail=$(df -BM --output=avail "$GITHUB_WORKSPACE" | tail -1 | tr -dc '0-9')
+        echo "::notice title=Disk layout::root ${root_avail}MiB, workspace ${ws_avail}MiB free"
+        if [ "$root_avail" -lt 2048 ]; then
+          echo "::error title=Disk::root only ${root_avail}MiB free; runner diag logs will fail"
+          exit 1
+        fi
 
     - name: Setup ccache
       uses: hendrikmuhs/ccache-action@v1.2
