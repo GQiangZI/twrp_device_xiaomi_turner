@@ -35,6 +35,16 @@ name: Build TWRP (turner) — YARP base
 # already deletes the toolchains, so remove-* on maximize was redundant.
 # v6 also ADDS the missing .github/local_manifests/turner-slim.xml --
 # run #12 never reached Sync, but v5's `cp` would have failed there.
+# v7 (2026-11-08, after run #13): v6's revert went too far. Run #13
+# died in 2m30s at the new Verify disk layout guard: `/` had only
+# 100MiB free (workspace LV had 129G free). The bare Maximize never
+# removes the preinstalled toolchains from `/`, so `/` stays full --
+# v6's "remove-* is redundant" assumption was wrong (slimhub's Cleanup
+# evidently does not free `/`). v7 puts the four remove-* flags back
+# (`true`) and keeps ONLY remove-docker-images at `false` (the one
+# command that does not exist on the runner: `sudo: docker: command
+# not found`, run #12). swap-size-mb stays dropped (zram + default
+# 4G swap are enough; -j1 is the RAM control).
 # Run #10's DISK FULL fix (remove 8G swapfile, -j1, ccache 2G) is kept.
 
 on:
@@ -95,23 +105,26 @@ jobs:
       uses: rokibhasansagar/slimhub_actions@main
 
     - name: Maximize build space
-      # Run #12 (88de5758) added all the v5 `with:` inputs below and this
-      # step exited 1 in 3m25s (`Process completed with exit code 1`,
-      # annotation step:4:214). Job logs need repo admin to download, so
-      # the exact failing command is unknown. Run #11 with the BARE action
-      # (plus the `slimhub_actions` Cleanup above) succeeded through step
-      # 13, so revert to that proven combination.
-      # ONLY root-reserve-mb is kept: default 1024 leaves `/` with ~1GiB,
-      # which is where runner _diag logs, apt and ccache symlinks live --
-      # that is what killed run #10 ("No space left on device"). 4096 is
-      # pure arithmetic (shrinks the LVM image), it runs no extra command.
-      # slimhub_actions already removes dotnet/android/haskell/codeql, so
-      # remove-* on this action was redundant; `remove-docker-images`
-      # (sudo docker image prune) and swap-size-mb=8192 are the two v5
-      # additions most likely to have failed -- both are dropped.
+      # Run #12 (88de5758) failed here in 3m25s: the action's
+      # `remove-docker-images` step runs `sudo docker ...`, but the
+      # runner has no docker binary (`sudo: docker: command not found`).
+      # Run #13 (v6, all remove-* dropped) then died in 2m30s at the
+      # Verify disk layout guard: `/` had only 100MiB free, because
+      # without remove-* the preinstalled toolchains (dotnet, Android
+      # SDK, Haskell, CodeQL -- tens of GB) are never removed from `/`.
+      # So: remove the four toolchains, but NEVER call docker.
+      # root-reserve-mb 4096 leaves `/` room for runner diag logs, apt
+      # and ccache symlinks (run #10 died with `/` at ~1GiB). No
+      # swap-size-mb: zram + the default 4G swap are enough, -j1 is
+      # the RAM control.
       uses: easimon/maximize-build-space@master
       with:
         root-reserve-mb: 4096
+        remove-dotnet: 'true'
+        remove-android: 'true'
+        remove-haskell: 'true'
+        remove-codeql: 'true'
+        remove-docker-images: 'false'
 
     - name: Verify disk layout
       # Fast, cheap guard: if Maximize ever half-succeeds again, fail here
