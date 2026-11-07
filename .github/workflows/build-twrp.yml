@@ -114,8 +114,12 @@ jobs:
         echo "::notice title=Disk after sync::$(df -h --output=avail / | tail -1) free"
 
     - name: Apply PR #42 (OTG hotplug fix for GUI2)
+      # repo sync used --depth=1, so the local history has no common ancestor
+      # with the PR branch and plain `git merge` refuses with "unrelated
+      # histories". Unshallow first so the merge base is found.
       run: |
         cd bootable/recovery
+        git fetch --unshallow
         git fetch https://github.com/TWRP-Test/android_bootable_recovery.git pull/42/head
         git merge --no-edit FETCH_HEAD
 
