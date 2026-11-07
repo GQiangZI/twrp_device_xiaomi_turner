@@ -14,6 +14,12 @@
 # limitations under the License.
 #
 
+# YARP base: TWRP-Test/platform_manifest_twrp_aosp, branch twrp-16.0
+# (TWRP 3.7.1_16, GUI2/LVGL) + PR #42 (OTG hotplug fix, applied by the
+# build workflow). Adapted from the twrp-14.1 minimal-manifest tree; the
+# rothko patches that 14.1 needed are mostly already upstream here, see
+# patches/PATCHES.md for the per-patch verdict.
+#
 DEVICE_PATH := device/xiaomi/turner
 
 # Architecture
@@ -53,10 +59,8 @@ TARGET_USES_UEFI := true
 # Build Hack
 BUILD_BROKEN_DUP_RULES := true
 BUILD_BROKEN_ELF_PREBUILT_PRODUCT_COPY_FILES := true
-BUILD_BROKEN_NINJA_USES_ENV_VARS += RTIC_MPGEN
-BUILD_BROKEN_PLUGIN_VALIDATION := soong-libaosprecovery_defaults soong-libguitwrp_defaults soong-libminuitwrp_defaults soong-vold_defaults
 
-# Building with minimal manifest
+# Full TWRP-Test manifest (not the 14.1 minimal manifest); keep the escape hatch
 ALLOW_MISSING_DEPENDENCIES := true
 
 # Crypto
@@ -133,8 +137,8 @@ TARGET_BOARD_PLATFORM := mt6991
 # Properties
 TARGET_SYSTEM_PROP += $(DEVICE_PATH)/system.prop
 
-# Device Fstab
-TARGET_RECOVERY_FSTAB := $(DEVICE_PATH)/recovery/root/system/etc/recovery.fstab
+# Device Fstab (YARP tree layout: top level, like device/xiaomi/sm8850)
+TARGET_RECOVERY_FSTAB := $(DEVICE_PATH)/recovery.fstab
 
 # Resolution
 TARGET_SCREEN_HEIGHT := 3008
@@ -164,13 +168,11 @@ TW_THEME := portrait_hdpi
 TW_BRIGHTNESS_PATH := "/sys/class/leds/lcd-backlight/brightness"
 TW_DEFAULT_BRIGHTNESS := 200
 TW_MAX_BRIGHTNESS := 2047
-TWRP_NEW_THEME := true
 RECOVERY_SDCARD_ON_DATA := true
 TW_EXCLUDE_DEFAULT_USB_INIT := true
 TW_PREPARE_DATA_MEDIA_EARLY := true
 TW_USE_NEW_MINADBD := true
 TW_EXCLUDE_APEX := true
-TW_EXTRA_LANGUAGES := true
 TW_DEFAULT_LANGUAGE := zh_CN
 TW_HAS_NO_DISPLAY_CUTOUT := false
 # TW_STATUS_BAR_HEIGHT := 90
@@ -186,11 +188,18 @@ TW_USE_SERIALNO_PROPERTY_FOR_DEVICE_ID := true
 
 # Fastbootd
 TW_INCLUDE_FASTBOOTD := true
+# 16.0 WipeEncryption drops the metadata-encryption userdata mapping with
+# `dmctl delete userdata` (replaces the old FDE ioctl stub); needs dmctl
+TW_USE_DMCTL := true
 
 # Debug
 TARGET_USES_LOGD := true
 TWRP_INCLUDE_LOGCAT := true
 TWRP_EVENT_LOGGING := true
+# debug aids (same as the sm8850 YARP tree); useful if the new build also
+# shows a black screen — adb + logcat + strace stay available in recovery
+TARGET_RECOVERY_DEVICE_MODULES += debuggerd strace
+RECOVERY_BINARY_SOURCE_FILES += $(TARGET_OUT_EXECUTABLES)/debuggerd $(TARGET_OUT_EXECUTABLES)/strace
 
 # Tools
 TW_INCLUDE_RESETPROP := true
