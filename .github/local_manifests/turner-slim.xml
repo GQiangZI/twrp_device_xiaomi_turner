@@ -5,7 +5,7 @@
        these are the surviving prebuilts/* that a recovery ramdisk never uses.
        If a build complains about a missing prebuilt, delete that line.
        2026-11-08: 17 entries were deleted because remove-minimal.xml
-       already removes them -- repo FAILS on a duplicate <remove-project>
+       already removes them, so repo FAILS on a duplicate <remove-project>
        ("remove-project element specifies non-existent project", run #15).
        Every remaining entry was verified against the live twrp-16.0
        manifest (default.xml + twrp-default.xml) on 2026-11-08. -->
