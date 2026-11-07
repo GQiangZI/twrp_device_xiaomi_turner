@@ -68,13 +68,23 @@ jobs:
         create-symlink: true
 
     - name: Setup zram
+      # Best effort only: the 14.1 build succeeded without zram, and the
+      # runner kernel (7.0.0-1017-azure) has no linux-modules-extra package
+      # in apt, so a failed zram setup must never kill the build.
       run: |
-        sudo apt install linux-modules-extra-$(uname -r) zram-tools -y
-        sudo modprobe zram
-        sudo sed -i 's/^#PERCENT=50/PERCENT=90/' /etc/default/zramswap
-        sudo sed -i 's/^#PRIORITY=100/PRIORITY=1000/' /etc/default/zramswap
-        sudo systemctl restart zramswap
-        zramctl
+        sudo apt-get update -y || true
+        sudo apt-get install -y zram-tools || true
+        sudo apt-get install -y "linux-modules-extra-$(uname -r)" || true
+        if sudo modprobe zram 2>/dev/null; then
+          [ -f /etc/default/zramswap ] && sudo sed -i 's/^#PERCENT=50/PERCENT=90/' /etc/default/zramswap || true
+          [ -f /etc/default/zramswap ] && sudo sed -i 's/^#PRIORITY=100/PRIORITY=1000/' /etc/default/zramswap || true
+          sudo systemctl restart zramswap || true
+          zramctl || true
+          echo "::notice title=Zram::enabled"
+        else
+          echo "::warning title=Zram::zram module unavailable, building without zram swap"
+        fi
+        exit 0
 
     - name: Setup environment
       run: |
