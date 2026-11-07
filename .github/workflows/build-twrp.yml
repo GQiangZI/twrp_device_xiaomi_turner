@@ -126,13 +126,16 @@ jobs:
         # the local branch does not match remote (Google moves branches
         # around), repo falls back to fetching ALL refs and tags at
         # depth=INT_MAX -- clang alone balloons to ~19G, total sync 80G+.
-        # Defences, all in this step: --depth=1 explicit on sync (not
-        # just on init), --no-tags (already on), -c (current branch
-        # only). If sync still explodes, retry on a clean runner first
-        # (L7: delete + redo went 80G+ -> <20G); next fallback is
-        # per-project `repo sync prebuilts/rust --depth=1 --no-tags`,
-        # and YuKongA's last resort is a single-commit rust repo.
-        repo sync -c --depth=1 -j"$(nproc --all)" --force-sync --no-clone-bundle --no-tags --optimized-fetch --prune
+        # Defences, all in this step: --depth=1 on `repo init` above,
+        # --no-tags, -c (current branch only). NOTE: `repo sync` has NO
+        # --depth option -- v2.65 fails the whole step with
+        # "main.py: error: no such option: --depth" (run #8, 2026-11-07);
+        # do NOT re-add it here. If sync still explodes, retry on a
+        # clean runner first (L7: delete + redo went 80G+ -> <20G);
+        # next fallback is per-project
+        # `repo sync prebuilts/rust --no-tags`, and YuKongA's last
+        # resort is a single-commit rust repo.
+        repo sync -c -j"$(nproc --all)" --force-sync --no-clone-bundle --no-tags --optimized-fetch --prune
         kill $TIP_PID && exit 0
         echo "::notice title=Disk after sync::$(df -h --output=avail / | tail -1) free"
 
