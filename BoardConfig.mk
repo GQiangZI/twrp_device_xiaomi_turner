@@ -93,7 +93,12 @@ TARGET_PREBUILT_DTB := $(DEVICE_PATH)/prebuilt/dtb
 BOARD_USES_GENERIC_KERNEL_IMAGE := true
 BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT := true
 TW_LOAD_VENDOR_BOOT_MODULES := true
-BOARD_KERNEL_BASE := 0x3FFF8000
+# 原厂 turner vendor_boot.img 实测 header（见 analysis/vendor_boot_header.json）：
+#   kernel_addr=0x80000000  ramdisk_addr=0xA6F00000
+#   tags_addr=dtb_addr=0x87C80000
+# mkbootimg 以 base + *_OFFSET 写入这四个地址；旧 base 0x3FFF8000 使四个地址
+# 整体偏低 0x40000000。0x7FFF8000 配合现有 offsets 恰好还原原厂值。
+BOARD_KERNEL_BASE := 0x7FFF8000
 BOARD_PAGE_SIZE := 4096
 BOARD_KERNEL_OFFSET := 0x00008000
 BOARD_RAMDISK_OFFSET := 0x26F08000
@@ -102,7 +107,9 @@ BOARD_BOOT_HEADER_VERSION := 4
 BOARD_DTB_SIZE := 533115
 BOARD_DTB_OFFSET := 0x07C88000
 BOARD_HEADER_SIZE := 2128
-BOARD_VENDOR_CMDLINE := "bootopt=64S3,32N2,64N2 androidboot.selinux=permissive"
+# 原厂 cmdline 含 erofs.reserved_pages=64（super 内全是 erofs 逻辑分区），
+# 丢掉会影响 first_stage_mount / recovery 挂载。保留原厂值后再追加 permissive。
+BOARD_VENDOR_CMDLINE := "bootopt=64S3,32N2,64N2 erofs.reserved_pages=64 androidboot.selinux=permissive"
 BOARD_MKBOOTIMG_ARGS += --dtb $(TARGET_PREBUILT_DTB)
 BOARD_MKBOOTIMG_ARGS += --vendor_cmdline $(BOARD_VENDOR_CMDLINE)
 BOARD_MKBOOTIMG_ARGS += --pagesize $(BOARD_PAGE_SIZE) --board ""
@@ -216,7 +223,8 @@ TW_INCLUDE_FUSE_NTFS := true
 TW_INCLUDE_FUSE_EXFAT := true
 
 # Haptic
-TW_LOAD_VENDOR_MODULES := "haptic.ko"
+# Stock vendor_boot has no haptic.ko (verified against its 274 modules);
+# loading a missing module is a no-op, so drop the dead reference.
 TW_SUPPORT_INPUT_AIDL_HAPTICS := true
 TW_SUPPORT_INPUT_AIDL_HAPTICS_FQNAME := "IVibrator/vibratorfeature"
 TW_SUPPORT_INPUT_AIDL_HAPTICS_FIX_OFF := true
