@@ -45,6 +45,21 @@ name: Build TWRP (turner) — YARP base
 # command that does not exist on the runner: `sudo: docker: command
 # not found`, run #12). swap-size-mb stays dropped (zram + default
 # 4G swap are enough; -j1 is the RAM control).
+# v8 (2026-11-08, after run #14): v7 STILL died at the guard with
+# `/` at exactly 100MiB free -- and 100MiB is exactly the DEFAULT
+# temp-reserve-mb. Root cause, read from the action's own source
+# (easimon/maximize-build-space@master): it creates TWO loop PVs --
+# /pv.img on `/` sized (free(`/`) - root-reserve-mb), and
+# /mnt/tmp-pv.img sized (free(`/mnt`) - temp-reserve-mb). On THIS
+# runner /mnt is NOT a separate disk, it is a directory on `/`
+# (the Verify df prints /dev/root twice, no separate /mnt line).
+# So the temp PV is created on `/` AFTER the root PV, and it eats
+# the root reserve down to temp-reserve-mb. Final free on `/` is
+# ALWAYS temp-reserve-mb, whatever root-reserve-mb says. v8 sets
+# temp-reserve-mb: 3072, so `/` keeps ~3GiB (guard needs 2GiB)
+# and the temp PV stays a valid ~1GiB (root 4096 - temp 3072).
+# If /mnt ever is a separate disk again, this only shrinks its
+# PV by 3GiB -- harmless.
 # Run #10's DISK FULL fix (remove 8G swapfile, -j1, ccache 2G) is kept.
 
 on:
@@ -120,6 +135,12 @@ jobs:
       uses: easimon/maximize-build-space@master
       with:
         root-reserve-mb: 4096
+        # v8: /mnt is a directory on `/` on this runner (not a separate
+        # disk), so the temp PV loop file /mnt/tmp-pv.img is created on
+        # `/` AFTER the root PV and eats the root reserve. Final free
+        # space on `/` always ends up equal to temp-reserve-mb, so set
+        # it to 3072 (guard needs 2048; temp PV stays ~1GiB and valid).
+        temp-reserve-mb: 3072
         remove-dotnet: 'true'
         remove-android: 'true'
         remove-haskell: 'true'
