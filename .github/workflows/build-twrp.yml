@@ -90,7 +90,16 @@ jobs:
       run: |
         export DEBIAN_FRONTEND=noninteractive
         sudo apt update && sudo apt upgrade -y
-        sudo apt install repo -y
+        # Historic repo depth=1 bug (see Sync step): the distro `repo`
+        # launcher silently fetches the LATEST repo implementation on
+        # every run. Pin the launcher to Google's current one and pin
+        # the implementation via --repo-rev in `repo init` below, so a
+        # new buggy repo release cannot silently change sync behaviour.
+        mkdir -p "$HOME/bin"
+        curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
+        chmod a+x "$HOME/bin/repo"
+        echo "$HOME/bin" >> "$GITHUB_PATH"
+        "$HOME/bin/repo" --version || true
         # zstd is required by patches/build_make (ramdisk compression);
         # the rest are the standard AOSP build tools
         for i in 1 2 3; do sudo apt-get -o Acquire::Retries=3 update && break; sleep 15; done
@@ -106,10 +115,24 @@ jobs:
 
     - name: Sync TWRP 16.0 (YARP) source
       run: |
-        repo init -u ${{ github.event.inputs.TWRP_MANIFEST_URL }} -b ${{ github.event.inputs.TWRP_MANIFEST_BRANCH }} --depth=1
+        # --repo-rev pins the repo implementation (v2.65 is a documented
+        # working version; v2.66 regressed on init). Without it the
+        # launcher tracks `stable` and can pull a new release whose
+        # depth=1 handling is broken (see weishu/YuKongA note below).
+        repo init -u ${{ github.event.inputs.TWRP_MANIFEST_URL }} -b ${{ github.event.inputs.TWRP_MANIFEST_BRANCH }} --depth=1 --repo-rev=v2.65
         (while true; do echo "Syncing source..."; sleep 60; done) &
         TIP_PID=$!
-        repo sync -c -j"$(nproc --all)" --force-sync --no-clone-bundle --no-tags --optimized-fetch --prune
+        # Historic depth=1 bug: with an unpinned new repo release, when
+        # the local branch does not match remote (Google moves branches
+        # around), repo falls back to fetching ALL refs and tags at
+        # depth=INT_MAX -- clang alone balloons to ~19G, total sync 80G+.
+        # Defences, all in this step: --depth=1 explicit on sync (not
+        # just on init), --no-tags (already on), -c (current branch
+        # only). If sync still explodes, retry on a clean runner first
+        # (L7: delete + redo went 80G+ -> <20G); next fallback is
+        # per-project `repo sync prebuilts/rust --depth=1 --no-tags`,
+        # and YuKongA's last resort is a single-commit rust repo.
+        repo sync -c --depth=1 -j"$(nproc --all)" --force-sync --no-clone-bundle --no-tags --optimized-fetch --prune
         kill $TIP_PID && exit 0
         echo "::notice title=Disk after sync::$(df -h --output=avail / | tail -1) free"
 
@@ -140,7 +163,23 @@ jobs:
           for p in "$d"*.patch; do git -C "$t" apply "$GITHUB_WORKSPACE/$p"; done
         done
 
+    - name: Free disk (delete .repo metadata)
+      # YuKongA's advice: full checkout is ~100GB; --depth=1 is already on,
+      # and if disk is still tight, delete .repo after sync. Timing matters:
+      # ALL git ops (Apply PR merge, device-tree patch `git apply`) run
+      # BEFORE this step; the build itself only reads files, so .repo
+      # (manifest + per-project git dirs) is no longer needed. If a build
+      # ever complains about missing git metadata, remove this step.
+      run: |
+        du -sh .repo || true
+        rm -rf .repo
+        echo "::notice title=Disk after .repo removal::$(df -h --output=avail / | tail -1) free"
+
     - name: Build vendor_boot.img
+      # Low-memory: -j2 caps parallel link jobs. Default `m` runs 4 jobs
+      # on this runner; the re-run screenshot showed Mem 15Gi full and
+      # Swap 18Gi draining 107Mi -> 13Gi in 5 min, i.e. OOM territory.
+      # -j2 roughly halves peak RAM at the cost of a slower build.
       run: |
         {
           export ALLOW_MISSING_DEPENDENCIES=true
@@ -152,7 +191,7 @@ jobs:
           lunch twrp_turner
           (while true; do echo `date +%T` "Building TWRP..."; free -h; sleep 60; done) &
           TIP_PID=$!
-          m ${{ github.event.inputs.BUILD_PARTITION }}image
+          m -j2 ${{ github.event.inputs.BUILD_PARTITION }}image
           kill $TIP_PID
           # TWRP's relink lists lag behind vold (keystore2-V1 vs V4, ...) and copy the bootstrap
           # servicemanager: fill the gaps in recovery/root, then repack if anything changed
@@ -165,7 +204,7 @@ jobs:
             echo "::notice title=Added to recovery::$(echo "$fixed" | tr '\n' ';')"
             rm -rf out/target/product/turner/vendor_boot.img out/target/product/turner/vendor_ramdisk*.img \
               out/target/product/turner/obj/PACKAGING/vendor_boot_intermediates
-            m ${{ github.event.inputs.BUILD_PARTITION }}image
+            m -j2 ${{ github.event.inputs.BUILD_PARTITION }}image
           fi
         } 2>&1 | tee build.log
         cd out/target/product/turner
