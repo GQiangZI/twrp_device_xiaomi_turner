@@ -7,15 +7,27 @@ name: Build TWRP (turner) — YARP base
 # vendor_boot on turner; there is no dedicated recovery partition).
 # Dispatch: Actions -> Build TWRP (turner) — YARP base -> Run workflow.
 #
-# v4 (2026-11-08, after run #10): run #10 died of DISK FULL, not RAM --
-# first error line: "System.IO.IOException: No space left on device",
-# the runner itself could not write its own logs; the whole run lasted
-# only 16 min and the Build step died ~2 s after starting. The 8G disk
-# swapfile from v3 was the last straw: after sync the disk is nearly
-# full already, so the swapfile is REMOVED. -j1 stays (RAM is still
-# handled by one link job at a time; the runner's own 18G swap is the
-# safety net). The Free-disk step now prints full `df -h` so the next
-# failure shows exactly how much room was left.
+# v5 (2026-11-08): the 100G+ sync is NOT a repo-version bug -- pinning
+# --repo-rev=v2.65 does NOT help, because v2.65 itself contains the
+# fallback. Proof (git-repo v2.65, project.py):
+#   * default.xml sets <default revision="refs/tags/android-16.0.0_r1">,
+#     i.e. AOSP projects are pinned to a TAG -> resolved to a commit id.
+#   * project.py:3211 -- with `is_sha1 and current_branch_only`, if the
+#     target commit was not obtained repo re-runs _RemoteFetch with
+#     `depth=None` ("to avoid infinite recursion").
+#   * project.py:2980 -- depth=None AND an existing .git/shallow file
+#     (which --depth=1 created) => append --depth=2147483647 (INT_MAX)
+#     => unshallow => full history of every prebuilt => 100G+.
+#   * --optimized-fetch pushes SHA-pinned projects onto exactly that
+#     immutable-revision path. Dropped.
+# Fix: no more --depth=1. Use --partial-clone --clone-filter=blob:none
+# (native repo v2.65 option, repo script:405). Blobless clones keep full
+# commit/tree history but defer blobs; no `shallow` file exists, so the
+# INT_MAX branch can never fire and old prebuilt binaries never land on
+# disk. REPO_ALLOW_SHALLOW=0 is a belt-and-braces fallback.
+# Also: slim local manifest drops ~30 unused prebuilts; maximize-build-
+# space gets real inputs so the runner has 60G+ instead of ~30G.
+# Run #10's DISK FULL fix (remove 8G swapfile, -j1, ccache 2G) is kept.
 
 on:
   workflow_dispatch:
@@ -44,6 +56,11 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
+    # If any code path still honours a stray --depth, convert it to a
+    # blob:none partial clone instead of a shallow clone (git-repo
+    # v2.65 init.py:144, sync.py:2296). Prevents the INT_MAX unshallow.
+    env:
+      REPO_ALLOW_SHALLOW: "0"
     defaults:
       run:
         # explicit bash adds pipefail; without it a failed `m | tee` passed as success
@@ -70,7 +87,21 @@ jobs:
       uses: rokibhasansagar/slimhub_actions@main
 
     - name: Maximize build space
+      # Defaults are hostile: only +7-8G, root-reserve-mb=1024 (so `/`
+      # has ~1GiB -- runner _diag logs, apt and ccache symlinks live on
+      # `/`), swap-size-mb=4096. Removing preinstalled toolchains frees
+      # 60G+. swap-size-mb creates an LVM logical volume (NOT a file on
+      # `/`), so it does NOT repeat the v3 8G-swapfile mistake.
       uses: easimon/maximize-build-space@master
+      with:
+        root-reserve-mb: 4096
+        temp-reserve-mb: 100
+        swap-size-mb: 8192
+        remove-dotnet: 'true'
+        remove-android: 'true'
+        remove-haskell: 'true'
+        remove-codeql: 'true'
+        remove-docker-images: 'true'
 
     - name: Setup ccache
       uses: hendrikmuhs/ccache-action@v1.2
@@ -100,11 +131,9 @@ jobs:
       run: |
         export DEBIAN_FRONTEND=noninteractive
         sudo apt update && sudo apt upgrade -y
-        # Historic repo depth=1 bug (see Sync step): the distro `repo`
-        # launcher silently fetches the LATEST repo implementation on
-        # every run. Pin the launcher to Google's current one and pin
-        # the implementation via --repo-rev in `repo init` below, so a
-        # new buggy repo release cannot silently change sync behaviour.
+        # Pin the launcher AND the implementation. Note: --repo-rev
+        # alone does NOT fix the 100G sync (v2.65 has the unshallow
+        # fallback too); the fix is --partial-clone in the Sync step.
         mkdir -p "$HOME/bin"
         curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
         chmod a+x "$HOME/bin/repo"
@@ -125,39 +154,56 @@ jobs:
 
     - name: Sync TWRP 16.0 (YARP) source
       run: |
-        # --repo-rev pins the repo implementation (v2.65 is a documented
-        # working version; v2.66 regressed on init). Without it the
-        # launcher tracks `stable` and can pull a new release whose
-        # depth=1 handling is broken (see weishu/YuKongA note below).
-        repo init -u ${{ github.event.inputs.TWRP_MANIFEST_URL }} -b ${{ github.event.inputs.TWRP_MANIFEST_BRANCH }} --depth=1 --repo-rev=v2.65
+        # --partial-clone --clone-filter=blob:none is a native repo v2.65
+        # option (repo script:405). Do NOT pass --depth=1: a shallow clone
+        # creates .git/shallow, and the tag-pinned AOSP revision can make
+        # repo fall back to --depth=2147483647 (INT_MAX) = full history.
+        repo init -u ${{ github.event.inputs.TWRP_MANIFEST_URL }} \
+          -b ${{ github.event.inputs.TWRP_MANIFEST_BRANCH }} \
+          --partial-clone --clone-filter=blob:none \
+          --no-clone-bundle --repo-rev=v2.65
+
+        # Slim local manifest: twrp-default.xml already includes
+        # remove-minimal.xml (605 removals), but ~65 prebuilts/* survive.
+        # If a build later complains about a missing prebuilt, delete the
+        # matching <remove-project> line in that file and re-run.
+        mkdir -p .repo/local_manifests
+        cp device-tree/.github/local_manifests/turner-slim.xml \
+          .repo/local_manifests/turner-slim.xml
+
         (while true; do echo "Syncing source..."; sleep 60; done) &
         TIP_PID=$!
-        # Historic depth=1 bug: with an unpinned new repo release, when
-        # the local branch does not match remote (Google moves branches
-        # around), repo falls back to fetching ALL refs and tags at
-        # depth=INT_MAX -- clang alone balloons to ~19G, total sync 80G+.
-        # Defences, all in this step: --depth=1 on `repo init` above,
-        # --no-tags, -c (current branch only). NOTE: `repo sync` has NO
-        # --depth option -- v2.65 fails the whole step with
-        # "main.py: error: no such option: --depth" (run #8, 2026-11-07);
-        # do NOT re-add it here. If sync still explodes, retry on a
-        # clean runner first (L7: delete + redo went 80G+ -> <20G);
-        # next fallback is per-project
-        # `repo sync prebuilts/rust --no-tags`, and YuKongA's last
-        # resort is a single-commit rust repo.
-        repo sync -c -j"$(nproc --all)" --force-sync --no-clone-bundle --no-tags --optimized-fetch --prune
-        kill $TIP_PID && exit 0
+        # -c + --no-tags + --no-clone-bundle are the proven AOSP size
+        # reducers. --optimized-fetch is REMOVED: it is what drives
+        # SHA-pinned projects into the immutable-revision fallback.
+        # `repo sync` has NO --depth option (run #8) -- do NOT re-add it.
+        repo sync -c -j"$(nproc --all)" --force-sync \
+          --no-clone-bundle --no-tags --prune
+        RC=$?
+        kill $TIP_PID 2>/dev/null || true
+
+        # Verify the partial clone actually took effect. A server that
+        # ignores --filter silently degrades to a FULL clone -> 100G again.
+        PCHECK=$(git -C build/make config --get-regexp 'partialclone|promisor' 2>/dev/null | tr '\n' ';')
+        if [ -n "$PCHECK" ]; then
+          echo "::notice title=Partial clone OK::$PCHECK"
+        else
+          echo "::warning title=Partial clone NOT active::server ignored --filter; sync was FULL. See 05-depth1-100G根因与根治.md for the fallback plan."
+        fi
+        echo "::notice title=Sync size::.repo=$(du -sh .repo 2>/dev/null | cut -f1)"
+        df -h
         echo "::notice title=Disk after sync::$(df -h --output=avail / | tail -1) free"
+        exit $RC
 
     - name: Apply PR #42 (OTG hotplug fix for GUI2)
-      # repo sync used --depth=1, so the local history has no common ancestor
-      # with the PR branch and plain `git merge` refuses with "unrelated
-      # histories". Unshallow first so the merge base is found.
+      # A blob:none partial clone KEEPS full commit history, so the merge
+      # base is present -- `git fetch --unshallow` is neither needed nor
+      # valid (it errors on a complete/non-shallow repo). Keep
+      # --allow-unrelated-histories as a cheap safety net.
       run: |
         cd bootable/recovery
-        git fetch --unshallow
         git fetch https://github.com/TWRP-Test/android_bootable_recovery.git pull/42/head
-        git merge --no-edit FETCH_HEAD
+        git merge --no-edit --allow-unrelated-histories FETCH_HEAD
 
     - name: Setup device tree
       run: |
@@ -177,8 +223,9 @@ jobs:
         done
 
     - name: Free disk (delete .repo metadata)
-      # YuKongA's advice: full checkout is ~100GB; --depth=1 is already on,
-      # and if disk is still tight, delete .repo after sync. Timing matters:
+      # YuKongA's advice: delete .repo after sync to reclaim git objects.
+      # v5: with blob:none the object store is already much smaller, but
+      # removing it still frees space. Timing matters:
       # ALL git ops (Apply PR merge, device-tree patch `git apply`) run
       # BEFORE this step; the build itself only reads files, so .repo
       # (manifest + per-project git dirs) is no longer needed. If a build
@@ -231,6 +278,17 @@ jobs:
         cd out/target/product/turner
         sha256sum vendor_boot.img | tee vendor_boot.img.sha256
         echo "::notice title=vendor_boot.img::$(stat -c%s vendor_boot.img) bytes, sha256 $(cut -d' ' -f1 vendor_boot.img.sha256)"
+
+    - name: Upload build log (always)
+      # `if: failure()` steps never run when the runner process itself
+      # dies (run #10 had no build.log at all). Always persist it.
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-log-${{ github.run_number }}
+        path: build.log
+        if-no-files-found: ignore
+        retention-days: 14
 
     # Surface the compiler error as an annotation so it is readable without downloading logs
     - name: Report build error
