@@ -6,6 +6,13 @@ name: Build TWRP (turner) — YARP base
 # to device/xiaomi/turner). Builds vendor_boot.img (recovery lives in
 # vendor_boot on turner; there is no dedicated recovery partition).
 # Dispatch: Actions -> Build TWRP (turner) — YARP base -> Run workflow.
+#
+# v3 (2026-11-08, after run #9): -j2 STILL OOM'd -- the step-14 log shows
+# swap 74Mi -> 3.0Gi -> 7.2Gi -> 11Gi in 3 min during "Building TWRP...",
+# then the runner died; soong_build itself finished 100% (131/131). The
+# kill happens in the `m` link phase, so: -j1 (one link job at a time)
+# + an 8G disk swapfile as a safety net. Build is slower (allow ~3h;
+# job timeout is 360 min).
 
 on:
   workflow_dispatch:
@@ -178,11 +185,28 @@ jobs:
         rm -rf .repo
         echo "::notice title=Disk after .repo removal::$(df -h --output=avail / | tail -1) free"
 
+    - name: Add disk swapfile
+      # Best effort only: run #9 died in the link phase with swap
+      # 74Mi -> 11Gi in 3 min, so the runner's 18Gi swap is not enough
+      # headroom on its own. An 8G file on the freed disk adds a safety
+      # net next to -j1 below. If the disk cannot spare 8G, skip quietly
+      # and let -j1 carry the build -- never fail the build here.
+      run: |
+        if sudo fallocate -l 8G /swapfile2 2>/dev/null || sudo dd if=/dev/zero of=/swapfile2 bs=1M count=8192 2>/dev/null; then
+          sudo chmod 600 /swapfile2
+          sudo mkswap /swapfile2 && sudo swapon /swapfile2 && echo "::notice title=Swapfile::8G disk swap added" || echo "::warning title=Swapfile::mkswap/swapon failed, continuing without it"
+        else
+          echo "::warning title=Swapfile::could not allocate 8G, continuing without it"
+        fi
+        free -h || true
+        exit 0
+
     - name: Build vendor_boot.img
-      # Low-memory: -j2 caps parallel link jobs. Default `m` runs 4 jobs
-      # on this runner; the re-run screenshot showed Mem 15Gi full and
-      # Swap 18Gi draining 107Mi -> 13Gi in 5 min, i.e. OOM territory.
-      # -j2 roughly halves peak RAM at the cost of a slower build.
+      # Low-memory v3: -j1 caps concurrent link jobs at ONE. -j2 still
+      # OOM'd in run #9 (swap 74Mi -> 11Gi in 3 min during "Building
+      # TWRP...", runner died; soong_build had already finished 131/131).
+      # -j1 roughly halves peak RAM again vs -j2, at the cost of a slower
+      # build (allow ~3h; job timeout is 360 min).
       run: |
         {
           export ALLOW_MISSING_DEPENDENCIES=true
@@ -194,7 +218,7 @@ jobs:
           lunch twrp_turner
           (while true; do echo `date +%T` "Building TWRP..."; free -h; sleep 60; done) &
           TIP_PID=$!
-          m -j2 ${{ github.event.inputs.BUILD_PARTITION }}image
+          m -j1 ${{ github.event.inputs.BUILD_PARTITION }}image
           kill $TIP_PID
           # TWRP's relink lists lag behind vold (keystore2-V1 vs V4, ...) and copy the bootstrap
           # servicemanager: fill the gaps in recovery/root, then repack if anything changed
@@ -207,7 +231,7 @@ jobs:
             echo "::notice title=Added to recovery::$(echo "$fixed" | tr '\n' ';')"
             rm -rf out/target/product/turner/vendor_boot.img out/target/product/turner/vendor_ramdisk*.img \
               out/target/product/turner/obj/PACKAGING/vendor_boot_intermediates
-            m -j2 ${{ github.event.inputs.BUILD_PARTITION }}image
+            m -j1 ${{ github.event.inputs.BUILD_PARTITION }}image
           fi
         } 2>&1 | tee build.log
         cd out/target/product/turner
