@@ -1,10 +1,31 @@
-name: Build TWRP (turner)
+name: Build TWRP (turner) — YARP base
+
+# YARP base: TWRP-Test/platform_manifest_twrp_aosp, branch twrp-16.0
+# (TWRP 3.7.1_16, GUI2/LVGL) + PR #42 (OTG hotplug fix, applied below).
+# Device tree is this repo itself (checked out as device-tree, then copied
+# to device/xiaomi/turner). Builds vendor_boot.img (recovery lives in
+# vendor_boot on turner; there is no dedicated recovery partition).
+# Dispatch: Actions -> Build TWRP (turner) — YARP base -> Run workflow.
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths: ['.github/workflows/build-twrp.yml']
+    inputs:
+      TWRP_MANIFEST_URL:
+        description: "TWRP manifest url"
+        required: true
+        default: "https://github.com/TWRP-Test/platform_manifest_twrp_aosp"
+      TWRP_MANIFEST_BRANCH:
+        description: "TWRP branch"
+        required: true
+        default: "twrp-16.0"
+      DEVICE_TREE_BRANCH:
+        description: "Device tree branch (this repo)"
+        required: true
+        default: "main"
+      BUILD_PARTITION:
+        description: "Build partition"
+        required: true
+        default: "vendor_boot"
 
 permissions:
   contents: read
@@ -15,129 +36,145 @@ jobs:
     timeout-minutes: 360
     defaults:
       run:
-        # explicit bash adds pipefail; without it a failed `mka | tee` passed as success
+        # explicit bash adds pipefail; without it a failed `m | tee` passed as success
         shell: bash
     steps:
-      # No loop-backed LVM (maximize-build-space): heavy I/O + memory pressure on it hung the VM
-      # three times ("runner lost communication"). Use the real / and /mnt disks instead.
-      - name: Prepare disks, swap and memory cap
-        run: |
-          sudo swapoff -a && sudo rm -f /mnt/swapfile
-          # source alone is ~77 GB, so drop every preinstalled toolchain the build does not use
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache \
-            /usr/local/share/boost /usr/local/share/powershell /usr/local/share/chromium /usr/local/lib/node_modules \
-            /usr/share/swift /opt/microsoft /opt/google /opt/az /usr/local/julia*
-          sudo docker image prune -a -f >/dev/null || true
-          r=$(df -BG --output=avail / | tail -1 | tr -dc 0-9)
-          m=$(df -BG --output=avail /mnt | tail -1 | tr -dc 0-9)
-          echo "::notice title=Disk after cleanup::/ ${r}G free, /mnt ${m}G free"
-          # source (~50 GB) on one disk, out/ and swap on the other. Both disks normally have ~120 GB
-          if [ "$m" -ge 100 ] || [ "$m" -ge "$r" ]; then src=/mnt/twrp; out=/out; swap=/swapfile
-          else src=/twrp; out=/mnt/out; swap=/mnt/swapfile; fi
-          sudo mkdir -p "$src" "$out" && sudo chown "$USER" "$src" "$out"
-          sudo fallocate -l 16G "$swap" && sudo chmod 600 "$swap" && sudo mkswap "$swap" && sudo swapon "$swap"
-          echo "SRC=$src" >> "$GITHUB_ENV"
-          echo "OUT_DIR=$out" >> "$GITHUB_ENV"
-          # sync and build join this cgroup, so the runner agent always keeps RAM
-          # and an OOM kills only our processes
-          sudo mkdir /sys/fs/cgroup/build
-          # soong_build was OOM-killed at 12G; leave the runner just 1 GiB
-          echo $(( ($(awk '/MemTotal/{print $2}' /proc/meminfo) - 1048576) * 1024 )) | sudo tee /sys/fs/cgroup/build/memory.max
-          free -h
+    - name: Show build info
+      run: |
+        {
+          echo 'BUILD_INFO<<EOF'
+          echo
+          echo Manifest url: ${{ github.event.inputs.TWRP_MANIFEST_URL }}
+          echo Manifest branch: ${{ github.event.inputs.TWRP_MANIFEST_BRANCH }}
+          echo Device tree branch: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}
+          echo Device path: xiaomi/turner
+          echo Device name: turner
+          echo Build target: ${{ github.event.inputs.BUILD_PARTITION }}.img
+          echo Build date: `date`
+          echo
+          echo EOF
+        } >> "$GITHUB_ENV"
+        echo BUILD_DATE=`date +%F` >> "$GITHUB_ENV"
 
-      - name: Install build tools
-        run: |
-          # runner apt mirrors flake now and then
-          for i in 1 2 3; do sudo apt-get -o Acquire::Retries=3 update && break; sleep 15; done
-          sudo apt-get -o Acquire::Retries=3 install -y bc bison build-essential curl flex git gnupg gperf libssl-dev \
-            libxml2-utils lz4 python-is-python3 rsync unzip xsltproc zip zlib1g-dev zstd
-          mkdir -p ~/bin
-          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o ~/bin/repo
-          chmod +x ~/bin/repo
-          echo "$HOME/bin" >> "$GITHUB_PATH"
-          git config --global user.name github-actions
-          git config --global user.email github-actions@users.noreply.github.com
+    - name: Cleanup
+      uses: rokibhasansagar/slimhub_actions@main
 
-      - uses: actions/checkout@v4
-        with:
-          path: device-tree
+    - name: Maximize build space
+      uses: easimon/maximize-build-space@master
 
-      - name: Sync TWRP 14.1 minimal manifest
-        run: |
-          echo $$ | sudo tee /sys/fs/cgroup/build/cgroup.procs >/dev/null
-          cd "$SRC"
-          repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-14.1
-          # TeamWin/LineageOS forks follow branches; the lock pins them (Update TWRP sources workflow)
-          lock="$GITHUB_WORKSPACE/device-tree/.github/twrp-sources.lock.xml"
-          if [ -f "$lock" ]; then
-            mkdir -p .repo/local_manifests && cp "$lock" .repo/local_manifests/
-            echo "::notice title=TWRP sources::pinned by twrp-sources.lock.xml ($(grep -c '<extend-project' "$lock") projects)"
-          else
-            echo "::warning title=TWRP sources::no lock, using the latest commits of every branch"
+    - name: Setup ccache
+      uses: hendrikmuhs/ccache-action@v1.2
+      with:
+        create-symlink: true
+
+    - name: Setup zram
+      run: |
+        sudo apt install linux-modules-extra-$(uname -r) zram-tools -y
+        sudo modprobe zram
+        sudo sed -i 's/^#PERCENT=50/PERCENT=90/' /etc/default/zramswap
+        sudo sed -i 's/^#PRIORITY=100/PRIORITY=1000/' /etc/default/zramswap
+        sudo systemctl restart zramswap
+        zramctl
+
+    - name: Setup environment
+      run: |
+        export DEBIAN_FRONTEND=noninteractive
+        sudo apt update && sudo apt upgrade -y
+        sudo apt install repo -y
+        # zstd is required by patches/build_make (ramdisk compression);
+        # the rest are the standard AOSP build tools
+        for i in 1 2 3; do sudo apt-get -o Acquire::Retries=3 update && break; sleep 15; done
+        sudo apt-get -o Acquire::Retries=3 install -y bc bison build-essential curl flex git gnupg gperf libssl-dev \
+          libxml2-utils lz4 python-is-python3 rsync unzip xsltproc zip zlib1g-dev zstd
+        git config --global user.name ${{ github.actor }}
+        git config --global user.email ${{ github.actor }}@users.noreply.github.com
+
+    - uses: actions/checkout@v4
+      with:
+        path: device-tree
+        ref: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}
+
+    - name: Sync TWRP 16.0 (YARP) source
+      run: |
+        repo init -u ${{ github.event.inputs.TWRP_MANIFEST_URL }} -b ${{ github.event.inputs.TWRP_MANIFEST_BRANCH }} --depth=1
+        (while true; do echo "Syncing source..."; sleep 60; done) &
+        TIP_PID=$!
+        repo sync -c -j"$(nproc --all)" --force-sync --no-clone-bundle --no-tags --optimized-fetch --prune
+        kill $TIP_PID && exit 0
+        echo "::notice title=Disk after sync::$(df -h --output=avail / | tail -1) free"
+
+    - name: Apply PR #42 (OTG hotplug fix for GUI2)
+      run: |
+        cd bootable/recovery
+        git fetch https://github.com/TWRP-Test/android_bootable_recovery.git pull/42/head
+        git merge --no-edit FETCH_HEAD
+
+    - name: Setup device tree
+      run: |
+        mkdir -p device/xiaomi
+        cp -a device-tree device/xiaomi/turner
+        echo -e "$BUILD_INFO" > device/xiaomi/turner/INFO.txt
+        echo "Change log:" >> device/xiaomi/turner/INFO.txt
+        git -C device-tree log --pretty=format:"- %h-%an: %s" -20 >> device/xiaomi/turner/INFO.txt
+
+    - name: Apply device-tree patches
+      run: |
+        # patches/<project path with / as _>/*.patch, e.g. build_make -> build/make
+        # (see patches/PATCHES.md for which 14.1 patches were dropped on 16.0 and why)
+        for d in device/xiaomi/turner/patches/*/; do
+          t=$(basename "$d"); t=${t//_//}
+          for p in "$d"*.patch; do git -C "$t" apply "$GITHUB_WORKSPACE/$p"; done
+        done
+
+    - name: Build vendor_boot.img
+      run: |
+        {
+          export ALLOW_MISSING_DEPENDENCIES=true
+          source build/envsetup.sh
+          export CCACHE_DIR=.ccache
+          export CCACHE_EXEC=$(command -v ccache)
+          export CCACHE_MAXSIZE=5G
+          export USE_CCACHE=1
+          lunch twrp_turner
+          (while true; do echo `date +%T` "Building TWRP..."; free -h; sleep 60; done) &
+          TIP_PID=$!
+          m ${{ github.event.inputs.BUILD_PARTITION }}image
+          kill $TIP_PID
+          # TWRP's relink lists lag behind vold (keystore2-V1 vs V4, ...) and copy the bootstrap
+          # servicemanager: fill the gaps in recovery/root, then repack if anything changed
+          fixed=$(python3 device/xiaomi/turner/.github/scripts/recovery_deps.py \
+            out/target/product/turner/recovery/root \
+            out/target/product/turner/system/lib64 out/target/product/turner/system_ext/lib64 \
+            out/target/product/turner/vendor/lib64 out/soong/.intermediates) ||
+            echo "::warning title=Recovery deps::some libraries were not found in the build output"
+          if [ -n "$fixed" ]; then
+            echo "::notice title=Added to recovery::$(echo "$fixed" | tr '\n' ';')"
+            rm -rf out/target/product/turner/vendor_boot.img out/target/product/turner/vendor_ramdisk*.img \
+              out/target/product/turner/obj/PACKAGING/vendor_boot_intermediates
+            m ${{ github.event.inputs.BUILD_PARTITION }}image
           fi
-          repo sync -c -j"$(nproc --all)" --force-sync --no-clone-bundle --no-tags --optimized-fetch --prune
-          # reference ABI dumps only feed optional ABI checks (skipped when missing); frees ~5.6G for swap
-          rm -rf prebuilts/abi-dumps
-          # TWRP 14.1 makefiles still link *-ndk_platform AIDL libs, which Android 13+ no longer
-          # generates; use the -ndk ones TWRP's own vold links (keystore2 is V4 there)
-          grep -rl -e '-ndk_platform' --include='*.mk' bootable/recovery | xargs -r sed -i \
-            -e 's/android\.system\.keystore2-V1-ndk_platform/android.system.keystore2-V4-ndk/g' \
-            -e 's/-ndk_platform/-ndk/g'
-          echo "::notice title=Disk after sync::$(df -h --output=avail / | tail -1) free; biggest: $(du -sh .repo prebuilts/* external/* 2>/dev/null | sort -h | tail -6 | tr '\t\n' ' ;')"
+        } 2>&1 | tee build.log
+        cd out/target/product/turner
+        sha256sum vendor_boot.img | tee vendor_boot.img.sha256
+        echo "::notice title=vendor_boot.img::$(stat -c%s vendor_boot.img) bytes, sha256 $(cut -d' ' -f1 vendor_boot.img.sha256)"
 
-      - name: Build vendor_boot.img
-        run: |
-          echo $$ | sudo tee /sys/fs/cgroup/build/cgroup.procs >/dev/null
-          mkdir -p "$SRC/device/xiaomi"
-          cp -a device-tree "$SRC/device/xiaomi/turner"
-          cd "$SRC"
-          # patches/<project path with / as _>/*.patch, e.g. build_make -> build/make
-          for d in device/xiaomi/turner/patches/*/; do
-            t=$(basename "$d"); t=${t//_//}
-            for p in "$d"*.patch; do git -C "$t" apply "$SRC/$p"; done
-          done
-          {
-            export ALLOW_MISSING_DEPENDENCIES=true
-            source build/envsetup.sh
-            # 14.1 lunch requires <product>-<release>-<variant>
-            lunch twrp_turner-ap2a-eng || lunch twrp_turner-trunk_staging-eng
-            # -k: keep going past the first failure so one run reports every broken file
-            mka vendorbootimage -k
-            # TWRP's relink lists lag behind vold (keystore2-V1 vs V4, ...) and copy the bootstrap
-            # servicemanager: fill the gaps in recovery/root, then repack if anything changed
-            # not fatal here: the verify workflow's gate decides, and it reruns in minutes, not hours
-            fixed=$(python3 device/xiaomi/turner/.github/scripts/recovery_deps.py "$OUT/recovery/root" \
-              "$OUT/system/lib64" "$OUT/system_ext/lib64" "$OUT/vendor/lib64" "$OUT_DIR/soong/.intermediates") ||
-              echo "::warning title=Recovery deps::some libraries were not found in the build output"
-            if [ -n "$fixed" ]; then
-              echo "::notice title=Added to recovery::$(echo "$fixed" | tr '\n' ';')"
-              rm -rf "$OUT"/vendor_boot.img "$OUT"/vendor_ramdisk*.img "$OUT"/obj/PACKAGING/vendor_boot_intermediates
-              mka vendorbootimage
-            fi
-          } 2>&1 | tee "$OUT_DIR/build.log"
-          cd "$OUT_DIR/target/product/turner"
-          sha256sum vendor_boot.img | tee vendor_boot.img.sha256
-          echo "::notice title=vendor_boot.img::$(stat -c%s vendor_boot.img) bytes, sha256 $(cut -d' ' -f1 vendor_boot.img.sha256)"
+    # Surface the compiler error as an annotation so it is readable without downloading logs
+    - name: Report build error
+      if: failure()
+      run: |
+        f="build.log"
+        [ -s "$f" ] || exit 0
+        msg=$(tail -c 3500 "$f" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' | sed ':a;N;$!ba;s/\n/%0A/g')
+        echo "::error title=Build error::$msg"
+        u=$(grep -o 'undefined symbol: [^ ]*' "$f" | cut -d' ' -f3 | sort -u | c++filt | head -80 | tr '\n' ';' || true)
+        [ -z "$u" ] || echo "::error title=Undefined symbols::$u"
+        e=$(sed 's/\x1b\[[0-9;]*m//g' "$f" | grep -E ': (fatal )?error: ' | sort -u | head -40 | sed -e 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g' || true)
+        [ -z "$e" ] || echo "::error title=All compile errors::$e"
+        echo "::notice title=Disk at failure::$(df -h --output=target,avail / /mnt | tail -n +2 | tr -s ' ' | tr '\n' ' ')"
 
-      # Surface the compiler error as an annotation so it is readable without downloading logs
-      - name: Report build error
-        if: failure()
-        run: |
-          f="$OUT_DIR/error.log"
-          [ -s "$f" ] || f="$OUT_DIR/build.log"
-          [ -s "$f" ] || exit 0
-          msg=$(tail -c 3500 "$f" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' | sed ':a;N;$!ba;s/\n/%0A/g')
-          echo "::error title=Build error::$msg"
-          # link failures: every missing symbol, not only the tail that fits above
-          u=$(grep -o 'undefined symbol: [^ ]*' "$f" | cut -d' ' -f3 | sort -u | c++filt | head -80 | tr '\n' ';' || true)
-          [ -z "$u" ] || echo "::error title=Undefined symbols::$u"
-          e=$(sed 's/\x1b\[[0-9;]*m//g' "$f" | grep -E ': (fatal )?error: ' | sort -u | head -40 | sed -e 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g' || true)
-          [ -z "$e" ] || echo "::error title=All compile errors::$e"
-          echo "::notice title=Disk at failure::$(df -h --output=target,avail / /mnt | tail -n +2 | tr -s ' ' | tr '\n' ' ')"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: twrp-turner-vendor_boot-${{ github.run_number }}
-          path: |
-            ${{ env.OUT_DIR }}/target/product/turner/vendor_boot.img
-            ${{ env.OUT_DIR }}/target/product/turner/vendor_boot.img.sha256
+    - uses: actions/upload-artifact@v4
+      with:
+        name: twrp-turner-vendor_boot-${{ github.run_number }}
+        path: |
+          out/target/product/turner/vendor_boot.img
+          out/target/product/turner/vendor_boot.img.sha256
