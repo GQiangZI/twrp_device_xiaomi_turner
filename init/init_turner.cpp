@@ -32,6 +32,6 @@ void vendor_load_properties()
         property_override(string("ro.product.") + prop + string("marketname"), "Xiaomi 14T Pro");
         property_override(string("ro.product.") + prop + string("cert"), "25079RPDCC");
     }
-    property_override("ro.bootimage.build.date.utc", "1793067698");
-    property_override("ro.build.date.utc", "1793067698");
+    property_override("ro.bootimage.build.date.utc", "1788421142");
+    property_override("ro.build.date.utc", "1788421142");
 }
