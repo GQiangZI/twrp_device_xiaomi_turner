@@ -61,6 +61,22 @@ name: Build TWRP (turner) — YARP base
 # If /mnt ever is a separate disk again, this only shrinks its
 # PV by 3GiB -- harmless.
 # Run #10's DISK FULL fix (remove 8G swapfile, -j1, ccache 2G) is kept.
+# v9 (2026-11-08, after run #17): run #17 died exactly like #9/#11 --
+# Build vendor_boot.img, ~1h18m in, runner lost, no compile error, no
+# log uploaded. #9/#11 screenshots PROVED the cause on those runs:
+# link phase, soong 131/131 done, swap 74Mi -> 11Gi in ~3 min, RAM
+# 14Gi -> 321Mi, runner dead. v7's "zram + default 4G swap are enough"
+# is therefore wrong -- the runner's own swap was already exhausted.
+# v9 brings the disk swapfile back, but NOT v3's way: v3 put a fixed
+# 8G file on `/` (the small partition) and run #10 died of DISK FULL
+# ~2s into Build. v9 instead creates the file AFTER .repo is deleted
+# (Free disk step), ON the workspace volume ($GITHUB_WORKSPACE, the
+# 129G-free LV -- not `/`), and sizes it from measured free space:
+# 16G if >=48G free, 8G if >=28G, else skip. Best effort, never fails
+# the build. If #18 still dies in the link phase, the per-minute
+# free/df trail in the Build log will show whether swap or disk ran
+# out first -- that trail is the one thing #17's lost log could not
+# give us, so v9 does not wait for the #17 screenshot to proceed.
 
 on:
   workflow_dispatch:
@@ -297,6 +313,38 @@ jobs:
         df -h
         du -sh -- * 2>/dev/null | sort -rh | head -15 || true
 
+    - name: Add disk swap (link-phase safety net)
+      # v9: runs #9/#11 PROVED the link phase exhausts swap (74Mi ->
+      # 11Gi in ~3 min, RAM 14Gi -> 321Mi, runner dead) even with -j1.
+      # v3's swapfile was the right idea in the wrong place: a fixed 8G
+      # file on `/` helped kill run #10 with DISK FULL. This version
+      # runs AFTER .repo is deleted and puts the file on the workspace
+      # volume ($GITHUB_WORKSPACE, the large LV), sized from measured
+      # free space -- 16G if >=48G free, 8G if >=28G, else skip.
+      # Best effort only: never fail the build here.
+      run: |
+        set +e
+        ws_avail=$(df -BM --output=avail "$GITHUB_WORKSPACE" | tail -1 | tr -dc '0-9')
+        echo "Workspace free: ${ws_avail}MiB"
+        if [ "$ws_avail" -ge 49152 ]; then SWAP_GB=16;
+        elif [ "$ws_avail" -ge 28672 ]; then SWAP_GB=8;
+        else echo "::warning title=Swapfile::only ${ws_avail}MiB free, skipping disk swap"; free -h || true; exit 0; fi
+        SWAPFILE="$GITHUB_WORKSPACE/.swapfile"
+        if sudo fallocate -l "${SWAP_GB}G" "$SWAPFILE" 2>/dev/null || sudo dd if=/dev/zero of="$SWAPFILE" bs=1M count=$((SWAP_GB * 1024)) 2>/dev/null; then
+          sudo chmod 600 "$SWAPFILE"
+          if sudo mkswap "$SWAPFILE" && sudo swapon "$SWAPFILE"; then
+            echo "::notice title=Swapfile::${SWAP_GB}G disk swap added on workspace volume"
+          else
+            echo "::warning title=Swapfile::mkswap/swapon failed, continuing without it"
+            sudo rm -f "$SWAPFILE" || true
+          fi
+        else
+          echo "::warning title=Swapfile::could not allocate ${SWAP_GB}G, continuing without it"
+        fi
+        free -h || true
+        swapon --show || true
+        exit 0
+
     - name: Build vendor_boot.img
       # Low-memory: -j1 caps concurrent link jobs at ONE. -j2 OOM'd in
       # run #9 (swap 74Mi -> 11Gi in 3 min during "Building TWRP...",
@@ -304,7 +352,10 @@ jobs:
       # v4: NO disk swapfile -- run #10 died of DISK FULL ("No space
       # left on device", runner could not even write its own logs) ~2 s
       # into this step; the 8G swapfile took the last free gigabytes.
-      # -j1 alone + the runner's own 18G swap is the RAM safety net now.
+      # v9: swapfile is back, but on the workspace volume and sized
+      # from measured free space (see "Add disk swap" step above) --
+      # runs #9/#11 proved -j1 + the runner's own swap alone do NOT
+      # hold the link phase (swap 74Mi -> 11Gi in ~3 min, runner dead).
       # CCACHE_MAXSIZE 2G (was 5G) to save disk as well.
       run: |
         {
