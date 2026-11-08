@@ -101,6 +101,20 @@ name: Build TWRP (turner) — YARP base
 # If it still dies: the tip line now also prints `swapon --show`, which
 # tells zram usage from disk swap usage instantly.
 
+# v11 (2026-11-08): the make goal used to be built by string glue --
+# `m -j1 <input>image` -- so the dispatch box had to be fed the mangled
+# string `vendorboot`. The real goal is build/make/core/main.mk:1316-1317:
+#   .PHONY: vendorbootimage
+#   vendorbootimage: $(INSTALLED_VENDOR_BOOTIMAGE_TARGET)
+# (no underscore), so `vendor_boot` + `image` matches NO rule, and `m`
+# only reports it AFTER kati finishes the whole analysis (~15 min in).
+# It never surfaced because every run so far died earlier, inside soong
+# bootstrap / kati (log stalled at `[ 99% 130/131] cp
+# out/host/linux-x86/bin/soong_build`). v11 keeps the input readable
+# (`vendor_boot`) and resolves the goal from the synced tree by grepping
+# main.mk/Makefile, printing `::notice title=Image target::m <goal>`.
+# No match => fail in seconds, listing the bootimage goals that exist.
+
 on:
   workflow_dispatch:
     inputs:
@@ -421,6 +435,38 @@ jobs:
           export CCACHE_EXEC=$(command -v ccache)
           export CCACHE_MAXSIZE=2G
           export USE_CCACHE=1
+
+          # The dispatch input is the PARTITION NAME (vendor_boot); the make
+          # goal is a DIFFERENT string. build/make/core/main.mk:1316 has
+          #   .PHONY: vendorbootimage
+          #   vendorbootimage: $(INSTALLED_VENDOR_BOOTIMAGE_TARGET)
+          # so "vendor_boot" + "image" = vendor_bootimage matches NO rule, and
+          # kati only reports that AFTER the whole analysis (~15 min in).
+          # Resolve the goal from the synced tree instead of glueing strings,
+          # and fail in seconds (printing the real list) if nothing matches.
+          PARTITION="${{ github.event.inputs.BUILD_PARTITION }}"
+          [ -n "$PARTITION" ] || PARTITION=vendor_boot
+          case "$PARTITION" in
+            vendor_boot) CANDS="vendorbootimage vendor_bootimage" ;;
+            init_boot)   CANDS="initbootimage init_boot_image" ;;
+            boot)        CANDS="bootimage" ;;
+            recovery)    CANDS="recoveryimage" ;;
+            *)           CANDS="$PARTITION" ;;
+          esac
+          IMG_TARGET=""
+          for c in $CANDS; do
+            if grep -qE "^$c:" build/make/core/main.mk build/make/core/Makefile 2>/dev/null; then
+              IMG_TARGET="$c"
+              break
+            fi
+          done
+          if [ -z "$IMG_TARGET" ]; then
+            echo "::error title=Image target::no make rule for '$PARTITION' (tried: $CANDS)"
+            grep -nE '^[a-z_0-9]+bootimage:' build/make/core/main.mk || true
+            exit 1
+          fi
+          echo "::notice title=Image target::m $IMG_TARGET  (dispatch input: $PARTITION)"
+
           lunch twrp_turner
 
           # 13G cgroup cap on a 15GiB box: leaves ~2G for the runner,
@@ -446,7 +492,7 @@ jobs:
            done) &
           TIP_PID=$!
 
-          $MEMGUARD m -j1 ${{ github.event.inputs.BUILD_PARTITION }}image
+          $MEMGUARD m -j1 "$IMG_TARGET"
           RC=$?
           kill $TIP_PID 2>/dev/null || true
 
@@ -467,7 +513,12 @@ jobs:
             echo "::notice title=Added to recovery::$(echo "$fixed" | tr '\n' ';')"
             rm -rf out/target/product/turner/vendor_boot.img out/target/product/turner/vendor_ramdisk*.img \
               out/target/product/turner/obj/PACKAGING/vendor_boot_intermediates
-            $MEMGUARD m -j1 ${{ github.event.inputs.BUILD_PARTITION }}image
+            $MEMGUARD m -j1 "$IMG_TARGET"
+            RC=$?
+            if [ "$RC" -ne 0 ]; then
+              echo "::warning title=Repack exit code::$RC"
+              exit $RC
+            fi
           fi
           exit $RC
         } 2>&1 | tee build.log
