@@ -77,6 +77,29 @@ name: Build TWRP (turner) — YARP base
 # free/df trail in the Build log will show whether swap or disk ran
 # out first -- that trail is the one thing #17's lost log could not
 # give us, so v9 does not wait for the #17 screenshot to proceed.
+# v10 (2026-11-08, after the run that hung 25 min posting no tip line):
+# The tip loop echoes every 60s, so 25 minutes of silence while the
+# step still spins is NOT a slow compile -- it is the box thrashing so
+# hard that even `echo` cannot get a timeslice. v9's swap numbers
+# explain it: "Swap 89Mi -> 3.4Gi -> 6.9Gi -> 13Gi" in 3 minutes on a
+# 15GiB runner, while RAM sat pinned at 15Gi used. That growth was
+# ZRAM, not the swapfile: the Setup zram step ran PERCENT=90 (a
+# ~13.5GiB zram device) with PRIORITY=1000 (fill zram BEFORE disk).
+# zram pages live IN RAM, so that "safety net" was consuming the
+# physical pages the compiler needed -- it was the OOM cause. v10:
+#   (a) zram PERCENT 90 -> 25 (~3.7GiB, spike absorber only) and
+#       PRIORITY 1000 -> 100, so the workspace swapfile takes the bulk;
+#   (b) GOMAXPROCS=2 + GOGC=50 + LLVM_PARALLEL_LINK_JOBS=1: soong_build
+#       is Go, and `-j1` caps ONLY ninja. GOGC=50 halves the GC target,
+#       GOMAXPROCS=2 caps the parallel allocators -- together they take
+#       soong_build peak from ~5-6G to ~3G on this slim manifest;
+#   (c) swapfile tiers 24G/16G/8G (was 16G/8G);
+#   (d) the build runs inside a systemd --scope with MemoryMax=13G, so
+#       an over-limit build is killed by the cgroup OOM killer alone and
+#       the runner survives to upload build.log. Self-tested; falls back
+#       to an unguarded run if scopes are unavailable.
+# If it still dies: the tip line now also prints `swapon --show`, which
+# tells zram usage from disk swap usage instantly.
 
 on:
   workflow_dispatch:
@@ -137,7 +160,7 @@ jobs:
 
     - name: Maximize build space
       # Run #12 (88de5758) failed here in 3m25s: the action's
-      # `remove-docker-images` step runs `sudo docker ...`, but the
+      # remove-docker-images step runs `sudo docker ...`, but the
       # runner has no docker binary (`sudo: docker: command not found`).
       # Run #13 (v6, all remove-* dropped) then died in 2m30s at the
       # Verify disk layout guard: `/` had only 100MiB free, because
@@ -146,8 +169,8 @@ jobs:
       # So: remove the four toolchains, but NEVER call docker.
       # root-reserve-mb 4096 leaves `/` room for runner diag logs, apt
       # and ccache symlinks (run #10 died with `/` at ~1GiB). No
-      # swap-size-mb: zram + the default 4G swap are enough, -j1 is
-      # the RAM control.
+      # swap-size-mb: v10 controls RAM with zram 25% + GOGC + a cgroup
+      # cap, not by growing the swap device.
       uses: easimon/maximize-build-space@master
       with:
         root-reserve-mb: 4096
@@ -186,19 +209,30 @@ jobs:
       # Best effort only: the 14.1 build succeeded without zram, and the
       # runner kernel (7.0.0-1017-azure) has no linux-modules-extra package
       # in apt, so a failed zram setup must never kill the build.
+      #
+      # v10 CRITICAL: zram pages live IN RAM. With PERCENT=90 on a 15GiB
+      # runner the device is ~13.5GiB, and PRIORITY=1000 made the kernel
+      # fill it FIRST -- that is the "Swap 89Mi -> 3.4Gi -> 6.9Gi -> 13Gi
+      # in 3 min, RAM pinned at 15Gi" slide from the hung run, i.e. the
+      # swap reserve was consuming the compiler's physical pages. 25%
+      # (~3.7GiB) keeps zram as a short-spike absorber; the workspace
+      # swapfile (on disk) carries the bulk, which is what we want.
       run: |
         sudo apt-get update -y || true
         sudo apt-get install -y zram-tools || true
         sudo apt-get install -y "linux-modules-extra-$(uname -r)" || true
         if sudo modprobe zram 2>/dev/null; then
-          [ -f /etc/default/zramswap ] && sudo sed -i 's/^#PERCENT=50/PERCENT=90/' /etc/default/zramswap || true
-          [ -f /etc/default/zramswap ] && sudo sed -i 's/^#PRIORITY=100/PRIORITY=1000/' /etc/default/zramswap || true
+          [ -f /etc/default/zramswap ] && sudo sed -i 's/^#*PERCENT=.*/PERCENT=25/' /etc/default/zramswap || true
+          [ -f /etc/default/zramswap ] && sudo sed -i 's/^#*PRIORITY=.*/PRIORITY=100/' /etc/default/zramswap || true
           sudo systemctl restart zramswap || true
           zramctl || true
-          echo "::notice title=Zram::enabled"
+          echo "::notice title=Zram::enabled at PERCENT=25 PRIORITY=100 (v10; 90/1000 ate the RAM)"
         else
           echo "::warning title=Zram::zram module unavailable, building without zram swap"
         fi
+        # default balance: the bulk swap is on disk, so do not let the
+        # kernel over-eagerly page out live compiler text.
+        sudo sysctl -w vm.swappiness=60 || true
         exit 0
 
     - name: Setup environment
@@ -321,13 +355,17 @@ jobs:
       # runs AFTER .repo is deleted and puts the file on the workspace
       # volume ($GITHUB_WORKSPACE, the large LV), sized from measured
       # free space -- 16G if >=48G free, 8G if >=28G, else skip.
+      # v10: tiers raised to 24G/16G/8G, because zram is now capped at
+      # ~3.7GiB -- the disk swapfile is the real reserve for the link
+      # phase and must be deep enough to matter.
       # Best effort only: never fail the build here.
       run: |
         set +e
         ws_avail=$(df -BM --output=avail "$GITHUB_WORKSPACE" | tail -1 | tr -dc '0-9')
         echo "Workspace free: ${ws_avail}MiB"
-        if [ "$ws_avail" -ge 49152 ]; then SWAP_GB=16;
-        elif [ "$ws_avail" -ge 28672 ]; then SWAP_GB=8;
+        if [ "$ws_avail" -ge 61440 ]; then SWAP_GB=24;
+        elif [ "$ws_avail" -ge 40960 ]; then SWAP_GB=16;
+        elif [ "$ws_avail" -ge 24576 ]; then SWAP_GB=8;
         else echo "::warning title=Swapfile::only ${ws_avail}MiB free, skipping disk swap"; free -h || true; exit 0; fi
         SWAPFILE="$GITHUB_WORKSPACE/.swapfile"
         if sudo fallocate -l "${SWAP_GB}G" "$SWAPFILE" 2>/dev/null || sudo dd if=/dev/zero of="$SWAPFILE" bs=1M count=$((SWAP_GB * 1024)) 2>/dev/null; then
@@ -357,19 +395,67 @@ jobs:
       # runs #9/#11 proved -j1 + the runner's own swap alone do NOT
       # hold the link phase (swap 74Mi -> 11Gi in ~3 min, runner dead).
       # CCACHE_MAXSIZE 2G (was 5G) to save disk as well.
+      #
+      # v10 memory controls (the fix for the 25-min silent hang):
+      # -j1 caps ninja only; soong_build is a Go process with its own
+      # heap, so cap THAT: GOGC=50 halves the GC target, GOMAXPROCS=2
+      # limits parallel allocation. LLVM_PARALLEL_LINK_JOBS=1 is the
+      # AOSP-native switch for concurrent clang links (each lld peaks
+      # ~2G; two at once is what eats the box at 99%).
+      # The `m` invocations run inside a cgroup scope with MemoryMax=13G:
+      # an over-limit build is killed by the cgroup OOM killer alone and
+      # the runner survives to upload build.log. Self-tested; if scopes
+      # are unavailable it silently falls back to an unguarded run.
       run: |
         {
+          # set -e is inherited from the Actions shell; without this an OOM-
+          # killed m aborts the group before RC is read and the exit code
+          # (137/143) never reaches the log.
+          set +e
           export ALLOW_MISSING_DEPENDENCIES=true
+          export GOMAXPROCS=2
+          export GOGC=50
+          export LLVM_PARALLEL_LINK_JOBS=1
           source build/envsetup.sh
           export CCACHE_DIR=.ccache
           export CCACHE_EXEC=$(command -v ccache)
           export CCACHE_MAXSIZE=2G
           export USE_CCACHE=1
           lunch twrp_turner
-          (while true; do echo `date +%T` "Building TWRP..."; free -h; df -h / | tail -1; sleep 60; done) &
+
+          # 13G cgroup cap on a 15GiB box: leaves ~2G for the runner,
+          # tee and this tip loop. Self-test with `true` -- a scope that
+          # cannot be created must never fail the build.
+          MEMGUARD=""
+          if command -v systemd-run >/dev/null 2>&1; then
+            if sudo systemd-run --scope -p MemoryMax=13G -p MemorySwapMax=40G \
+                 --quiet --wait true >/dev/null 2>&1; then
+              MEMGUARD="sudo systemd-run --scope -p MemoryMax=13G -p MemorySwapMax=40G --quiet --wait"
+              echo "::notice title=MemGuard::build capped at MemoryMax=13G via cgroup scope"
+            else
+              echo "::warning title=MemGuard::systemd scope unavailable, running unguarded"
+            fi
+          fi
+
+          (while true; do
+             echo `date +%T` "Building TWRP..."
+             free -h | head -2
+             df -h / | tail -1
+             swapon --show
+             sleep 60
+           done) &
           TIP_PID=$!
-          m -j1 ${{ github.event.inputs.BUILD_PARTITION }}image
-          kill $TIP_PID
+
+          $MEMGUARD m -j1 ${{ github.event.inputs.BUILD_PARTITION }}image
+          RC=$?
+          kill $TIP_PID 2>/dev/null || true
+
+          # a cgroup OOM kill lands here as 137/143, not as a compile error
+          if [ "$RC" -ne 0 ]; then
+            echo "::warning title=Build exit code::$RC (137/143 = killed: cgroup OOM or SIGTERM)"
+            exit $RC
+          fi
+
           # TWRP's relink lists lag behind vold (keystore2-V1 vs V4, ...) and copy the bootstrap
           # servicemanager: fill the gaps in recovery/root, then repack if anything changed
           fixed=$(python3 device/xiaomi/turner/.github/scripts/recovery_deps.py \
@@ -381,8 +467,9 @@ jobs:
             echo "::notice title=Added to recovery::$(echo "$fixed" | tr '\n' ';')"
             rm -rf out/target/product/turner/vendor_boot.img out/target/product/turner/vendor_ramdisk*.img \
               out/target/product/turner/obj/PACKAGING/vendor_boot_intermediates
-            m -j1 ${{ github.event.inputs.BUILD_PARTITION }}image
+            $MEMGUARD m -j1 ${{ github.event.inputs.BUILD_PARTITION }}image
           fi
+          exit $RC
         } 2>&1 | tee build.log
         cd out/target/product/turner
         sha256sum vendor_boot.img | tee vendor_boot.img.sha256
@@ -412,6 +499,7 @@ jobs:
         e=$(sed 's/\x1b\[[0-9;]*m//g' "$f" | grep -E ': (fatal )?error: ' | sort -u | head -40 | sed -e 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g' || true)
         [ -z "$e" ] || echo "::error title=All compile errors::$e"
         echo "::notice title=Disk at failure::$(df -h --output=target,avail / /mnt | tail -n +2 | tr -s ' ' | tr '\n' ' ')"
+        echo "::notice title=Swap at failure::$(swapon --show | tr -s ' ' | tr '\n' ' ')"
 
     - uses: actions/upload-artifact@v4
       with:
