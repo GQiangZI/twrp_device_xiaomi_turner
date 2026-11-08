@@ -22,4 +22,4 @@ external_storage.casefold.enabled=1
 external_storage.sdcardfs.enabled=0
 
 # API
-ro.vendor.api_level=34
+ro.vendor.api_level=35

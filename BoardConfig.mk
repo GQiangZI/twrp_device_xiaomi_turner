@@ -205,8 +205,10 @@ TWRP_INCLUDE_LOGCAT := true
 TWRP_EVENT_LOGGING := true
 # debug aids (same as the sm8850 YARP tree); useful if the new build also
 # shows a black screen — adb + logcat + strace stay available in recovery
-TARGET_RECOVERY_DEVICE_MODULES += debuggerd strace
-RECOVERY_BINARY_SOURCE_FILES += $(TARGET_OUT_EXECUTABLES)/debuggerd $(TARGET_OUT_EXECUTABLES)/strace
+# debuggerd dropped: its relinked deps (libdebuggerd_handler.so / libdebuggerd_client.so)
+# are not in TW_RECOVERY_ADDITIONAL_RELINK_LIBRARY_FILES, and recovery has no tombstoned
+TARGET_RECOVERY_DEVICE_MODULES += strace
+RECOVERY_BINARY_SOURCE_FILES += $(TARGET_OUT_EXECUTABLES)/strace
 
 # Tools
 TW_INCLUDE_RESETPROP := true
