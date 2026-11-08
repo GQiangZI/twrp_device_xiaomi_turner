@@ -234,3 +234,5 @@ TW_CUSTOM_CPU_TEMP_PATH := "/sys/class/thermal/thermal_zone53/temp"
 TW_BATTERY_SYSFS_WAIT_SECONDS := 6
 # read capacity straight from sysfs: recovery has no registered health HAL, so the default path shows a fake 100%
 TW_USE_LEGACY_BATTERY_SERVICES := true
+# pin the sysfs node so the legacy branch never falls back to TWRP's built-in default
+TW_CUSTOM_BATTERY_PATH := "/sys/class/power_supply/battery/capacity"
