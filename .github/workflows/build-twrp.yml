@@ -304,9 +304,11 @@ jobs:
         # reducers. --optimized-fetch is REMOVED: it is what drives
         # SHA-pinned projects into the immutable-revision fallback.
         # `repo sync` has NO --depth option (run #8) -- do NOT re-add it.
+        set +e
         repo sync -c -j"$(nproc --all)" --force-sync \
           --no-clone-bundle --no-tags --prune
         RC=$?
+        set -e
         kill "$TIP_PID" 2>/dev/null || true
         wait "$TIP_PID" 2>/dev/null || true
         trap - EXIT
