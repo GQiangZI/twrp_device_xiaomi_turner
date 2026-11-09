@@ -293,8 +293,13 @@ jobs:
         cp device-tree/.github/local_manifests/turner-slim.xml \
           .repo/local_manifests/turner-slim.xml
 
-        (while true; do echo "Syncing source..."; sleep 60; done) &
+        (while true; do
+          echo "Syncing source..."
+          df -h / "$GITHUB_WORKSPACE"
+          sleep 60
+        done) &
         TIP_PID=$!
+        trap 'kill "$TIP_PID" 2>/dev/null || true; wait "$TIP_PID" 2>/dev/null || true' EXIT
         # -c + --no-tags + --no-clone-bundle are the proven AOSP size
         # reducers. --optimized-fetch is REMOVED: it is what drives
         # SHA-pinned projects into the immutable-revision fallback.
@@ -302,7 +307,9 @@ jobs:
         repo sync -c -j"$(nproc --all)" --force-sync \
           --no-clone-bundle --no-tags --prune
         RC=$?
-        kill $TIP_PID 2>/dev/null || true
+        kill "$TIP_PID" 2>/dev/null || true
+        wait "$TIP_PID" 2>/dev/null || true
+        trap - EXIT
 
         # Verify the partial clone actually took effect. A server that
         # ignores --filter silently degrades to a FULL clone -> 100G again.
@@ -313,8 +320,11 @@ jobs:
           echo "::warning title=Partial clone NOT active::server ignored --filter; sync was FULL. See 05-depth1-100G根因与根治.md for the fallback plan."
         fi
         echo "::notice title=Sync size::.repo=$(du -sh .repo 2>/dev/null | cut -f1)"
-        df -h
-        echo "::notice title=Disk after sync::$(df -h --output=avail / | tail -1) free"
+        echo "::group::Largest workspace directories after sync"
+        du -xhd1 "$GITHUB_WORKSPACE" 2>/dev/null | sort -h | tail -20 || true
+        echo "::endgroup::"
+        df -h / "$GITHUB_WORKSPACE"
+        echo "::notice title=Disk after sync::root $(df -h --output=avail / | tail -1), workspace $(df -h --output=avail "$GITHUB_WORKSPACE" | tail -1)"
         exit $RC
 
     - name: Apply PR #42 (OTG hotplug fix for GUI2)
@@ -377,9 +387,10 @@ jobs:
         set +e
         ws_avail=$(df -BM --output=avail "$GITHUB_WORKSPACE" | tail -1 | tr -dc '0-9')
         echo "Workspace free: ${ws_avail}MiB"
-        if [ "$ws_avail" -ge 61440 ]; then SWAP_GB=24;
-        elif [ "$ws_avail" -ge 40960 ]; then SWAP_GB=16;
-        elif [ "$ws_avail" -ge 24576 ]; then SWAP_GB=8;
+        # Keep at least ~32GiB free for out/ growth after allocating swap.
+        if [ "$ws_avail" -ge 81920 ]; then SWAP_GB=24;
+        elif [ "$ws_avail" -ge 57344 ]; then SWAP_GB=16;
+        elif [ "$ws_avail" -ge 40960 ]; then SWAP_GB=8;
         else echo "::warning title=Swapfile::only ${ws_avail}MiB free, skipping disk swap"; free -h || true; exit 0; fi
         SWAPFILE="$GITHUB_WORKSPACE/.swapfile"
         if sudo fallocate -l "${SWAP_GB}G" "$SWAPFILE" 2>/dev/null || sudo dd if=/dev/zero of="$SWAPFILE" bs=1M count=$((SWAP_GB * 1024)) 2>/dev/null; then
@@ -483,18 +494,38 @@ jobs:
             fi
           fi
 
+          # Capture the largest top-level consumers at phase boundaries;
+          # the 60s heartbeat uses df only (a recursive du every minute
+          # would itself add significant I/O during the link phase).
+          disk_snapshot() {
+            echo "::group::Disk snapshot: $1"
+            df -h / "$GITHUB_WORKSPACE" out
+            free -h
+            swapon --show
+            echo "Largest workspace directories:"
+            du -xhd1 "$GITHUB_WORKSPACE" 2>/dev/null | sort -h | tail -20 || true
+            echo "Largest build output directories:"
+            du -xhd1 out 2>/dev/null | sort -h | tail -20 || true
+            echo "::endgroup::"
+          }
+          disk_snapshot "before build"
+
           (while true; do
-             echo `date +%T` "Building TWRP..."
+             echo "$(date +%T) Building TWRP..."
              free -h | head -2
-             df -h / | tail -1
+             df -h / "$GITHUB_WORKSPACE" out
              swapon --show
              sleep 60
            done) &
           TIP_PID=$!
+          trap 'kill "$TIP_PID" 2>/dev/null || true; wait "$TIP_PID" 2>/dev/null || true' EXIT
 
           $MEMGUARD m -j1 "$IMG_TARGET"
           RC=$?
-          kill $TIP_PID 2>/dev/null || true
+          kill "$TIP_PID" 2>/dev/null || true
+          wait "$TIP_PID" 2>/dev/null || true
+          trap - EXIT
+          disk_snapshot "after main build"
 
           # a cgroup OOM kill lands here as 137/143, not as a compile error
           if [ "$RC" -ne 0 ]; then
@@ -513,8 +544,10 @@ jobs:
             echo "::notice title=Added to recovery::$(echo "$fixed" | tr '\n' ';')"
             rm -rf out/target/product/turner/vendor_boot.img out/target/product/turner/vendor_ramdisk*.img \
               out/target/product/turner/obj/PACKAGING/vendor_boot_intermediates
+            disk_snapshot "before recovery repack"
             $MEMGUARD m -j1 "$IMG_TARGET"
             RC=$?
+            disk_snapshot "after recovery repack"
             if [ "$RC" -ne 0 ]; then
               echo "::warning title=Repack exit code::$RC"
               exit $RC
@@ -549,7 +582,11 @@ jobs:
         [ -z "$u" ] || echo "::error title=Undefined symbols::$u"
         e=$(sed 's/\x1b\[[0-9;]*m//g' "$f" | grep -E ': (fatal )?error: ' | sort -u | head -40 | sed -e 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g' || true)
         [ -z "$e" ] || echo "::error title=All compile errors::$e"
-        echo "::notice title=Disk at failure::$(df -h --output=target,avail / /mnt | tail -n +2 | tr -s ' ' | tr '\n' ' ')"
+        echo "::notice title=Disk at failure::$(df -h --output=target,avail / /mnt "$GITHUB_WORKSPACE" 2>/dev/null | tail -n +2 | tr -s ' ' | tr '\n' ' ')"
+        echo "::group::Largest directories at failure"
+        du -xhd1 "$GITHUB_WORKSPACE" 2>/dev/null | sort -h | tail -20 || true
+        du -xhd1 "$GITHUB_WORKSPACE/out" 2>/dev/null | sort -h | tail -20 || true
+        echo "::endgroup::"
         echo "::notice title=Swap at failure::$(swapon --show | tr -s ' ' | tr '\n' ' ')"
 
     - uses: actions/upload-artifact@v4
