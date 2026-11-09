@@ -427,8 +427,9 @@ jobs:
           # (137/143) never reaches the log.
           set +e
           export ALLOW_MISSING_DEPENDENCIES=true
-          export GOMAXPROCS=2
-          export GOGC=50
+          # Conservative Soong Go scheduler and heap settings.
+          export GOMAXPROCS=1
+          export GOGC=35
           export LLVM_PARALLEL_LINK_JOBS=1
           source build/envsetup.sh
           export CCACHE_DIR=.ccache
@@ -469,18 +470,24 @@ jobs:
 
           lunch twrp_turner
 
-          # 13G cgroup cap on a 15GiB box: leaves ~2G for the runner,
-          # tee and this tip loop. Self-test with `true` -- a scope that
-          # cannot be created must never fail the build.
-          MEMGUARD=""
-          if command -v systemd-run >/dev/null 2>&1; then
-            if sudo systemd-run --scope -p MemoryMax=13G -p MemorySwapMax=40G \
-                 --quiet --wait true >/dev/null 2>&1; then
-              MEMGUARD="sudo systemd-run --scope -p MemoryMax=13G -p MemorySwapMax=40G --quiet --wait"
-              echo "::notice title=MemGuard::build capped at MemoryMax=13G via cgroup scope"
-            else
-              echo "::warning title=MemGuard::systemd scope unavailable, running unguarded"
-            fi
+          # Reserve at least 5 GiB for the host runner, diagnostics and log upload.
+          MEM_TOTAL_KB=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+          MEM_TOTAL_GB=$((MEM_TOTAL_KB / 1024 / 1024))
+          MEM_LIMIT_GB=$((MEM_TOTAL_GB - 5))
+          [ "$MEM_LIMIT_GB" -gt 10 ] && MEM_LIMIT_GB=10
+          [ "$MEM_LIMIT_GB" -lt 8 ] && MEM_LIMIT_GB=8
+          MEMGUARD=()
+          if ! command -v systemd-run >/dev/null 2>&1; then
+            echo "::error title=MemGuard::systemd-run unavailable; refusing unguarded build"
+            exit 1
+          fi
+          if sudo systemd-run --scope -p "MemoryMax=${MEM_LIMIT_GB}G" -p MemorySwapMax=48G \
+               --quiet --wait true >/dev/null 2>&1; then
+            MEMGUARD=(sudo systemd-run --scope -p "MemoryMax=${MEM_LIMIT_GB}G" -p MemorySwapMax=48G --quiet --wait)
+            echo "::notice title=MemGuard::MemoryMax=${MEM_LIMIT_GB}G; reserved at least 5 GiB for runner"
+          else
+            echo "::error title=MemGuard::systemd cgroup memory limits unavailable; refusing unguarded build"
+            exit 1
           fi
 
           (while true; do
@@ -492,7 +499,7 @@ jobs:
            done) &
           TIP_PID=$!
 
-          $MEMGUARD m -j1 "$IMG_TARGET"
+          "${MEMGUARD[@]}" m -j1 "$IMG_TARGET"
           RC=$?
           kill $TIP_PID 2>/dev/null || true
 
@@ -513,7 +520,7 @@ jobs:
             echo "::notice title=Added to recovery::$(echo "$fixed" | tr '\n' ';')"
             rm -rf out/target/product/turner/vendor_boot.img out/target/product/turner/vendor_ramdisk*.img \
               out/target/product/turner/obj/PACKAGING/vendor_boot_intermediates
-            $MEMGUARD m -j1 "$IMG_TARGET"
+            "${MEMGUARD[@]}" m -j1 "$IMG_TARGET"
             RC=$?
             if [ "$RC" -ne 0 ]; then
               echo "::warning title=Repack exit code::$RC"
