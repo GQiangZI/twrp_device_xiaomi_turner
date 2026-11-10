@@ -92,6 +92,7 @@ BOARD_KERNEL_SEPARATED_DTBO := true
 TARGET_PREBUILT_DTB := $(DEVICE_PATH)/prebuilt/dtb
 BOARD_USES_GENERIC_KERNEL_IMAGE := true
 BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT := true
+BOARD_INCLUDE_RECOVERY_RAMDISK_IN_VENDOR_BOOT := true
 TW_LOAD_VENDOR_BOOT_MODULES := true
 # 原厂 turner vendor_boot.img 实测 header（见 analysis/vendor_boot_header.json）：
 #   kernel_addr=0x80000000  ramdisk_addr=0xA6F00000
@@ -161,11 +162,26 @@ BOARD_HAS_NO_SELECT_BUTTON := true
 BOARD_SUPPRESS_SECURE_ERASE := true
 TARGET_RECOVERY_PIXEL_FORMAT := RGBX_8888
 
-# Verified Boot
+# Verified Boot (warhol-style AVB block, copied from noahbliss/twrp-warhol)
 BOARD_AVB_ENABLE := true
+BOARD_AVB_MAKE_VBMETA_IMAGE_ARGS += --flags 3
+BOARD_AVB_RECOVERY_KEY_PATH := external/avb/test/data/testkey_rsa4096.pem
+BOARD_AVB_RECOVERY_ALGORITHM := SHA256_RSA4096
+BOARD_AVB_RECOVERY_ROLLBACK_INDEX := 1
+BOARD_AVB_RECOVERY_ROLLBACK_INDEX_LOCATION := 1
+# vendor_boot footer: this tree's build/make/core/Makefile signs vendor_boot
+# with $(INTERNAL_AVB_VENDOR_BOOT_SIGNING_ARGS), which is undefined anywhere
+# in the tree (so v4 got a hash-only footer, Algorithm NONE). The
+# BOARD_AVB_VENDOR_BOOT_* vars alone do not feed that rule, so define the
+# signing args here to make the vendor_boot footer actually RSA4096-signed.
+BOARD_AVB_VENDOR_BOOT_KEY_PATH := external/avb/test/data/testkey_rsa4096.pem
+BOARD_AVB_VENDOR_BOOT_ALGORITHM := SHA256_RSA4096
+BOARD_AVB_VENDOR_BOOT_ROLLBACK_INDEX := 1
+BOARD_AVB_VENDOR_BOOT_ROLLBACK_INDEX_LOCATION := 1
+INTERNAL_AVB_VENDOR_BOOT_SIGNING_ARGS := --algorithm SHA256_RSA4096 --key external/avb/test/data/testkey_rsa4096.pem --rollback_index 1
 
 # Init
-TARGET_INIT_VENDOR_LIB := libinit_turner
+TARGET_INIT_VENDOR_LIB := //$(DEVICE_PATH):libinit_turner
 TARGET_RECOVERY_DEVICE_MODULES := libinit_turner
 
 # TWRP Configurations
