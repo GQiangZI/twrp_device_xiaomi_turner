@@ -24,8 +24,8 @@ rothko（小米 14T Pro，同 MT6991 平台）设备树，是最接近的、可�
 
 - [x] 提取官方文件（DTB 533115 字节、vendor_boot 模块、vendor 文件）
 - [x] 旧底子（twrp-14.1 minimal manifest）编译成功，但刷到平板上黑屏
-- [ ] **YARP 底子首次编译**（本树，还没编过）
-- [ ] 启动测试（刷入 vendor_boot 后进 recovery，先确认屏幕 / 触摸 / 解密）
+- [x] YARP 底子编译成功（云端构建 v1–v5），但直出镜像刷机全部黑屏 / logo 循环，已改走原厂模板 repack 路线
+- [ ] 启动测试：repack v3 已通过全部静态验证，待刷机确认（屏幕 / 触摸 / 解密）
 - [ ] 解密（FBE，含小米 Weaver + Gatekeeper 双 protector）
 - [ ] ADB / MTP / sideload / fastbootd / OTG
 - [ ] 振动
@@ -63,8 +63,14 @@ fastboot reboot recovery
 ## 补丁说明
 
 见 `patches/PATCHES.md`：14.1 时代的 8 个补丁逐个核对过，能用在 16.0 上
-的只有 3 个（启动行去版本号、zstd 压 ramdisk、Gatekeeper 解密），
-其余 5 个在 16.0 上游已经修了，不要再加回去。
+的只有 2 个（启动行去版本号、Gatekeeper 解密），其余在 16.0 上游已经修了，
+不要再加回去。zstd 压 ramdisk 的补丁已删除：原厂用 lz4，zstd 镜像全部
+启动失败（见下面的问题记录）。
+
+## 联发科适配问题记录
+
+适配过程中实际遇到的问题（直出镜像为什么起不来、ro.hardware 是 mt8799、
+repack 合并时的符号配对审计等）集中记录在 [MEDIATEK-NOTES.md](MEDIATEK-NOTES.md)。
 
 ## 致谢
 

@@ -25,8 +25,8 @@ closest working MediaTek reference.
 
 - [x] Stock blobs extracted (DTB 533115 bytes, vendor_boot modules, vendor blobs)
 - [x] Old base (twrp-14.1 minimal manifest) built, but black-screened on the tablet
-- [ ] **First YARP-base build** (this tree, not built yet)
-- [ ] Boot test (flash vendor_boot, enter recovery; check display / touch / decryption)
+- [x] First YARP-base build succeeded (cloud builds v1–v5), but every clean-built image black-screened / logo-looped on the tablet; switched to repacking onto the stock image
+- [ ] Boot test: repack v3 passes the full static verification; flash test pending (display / touch / decryption)
 - [ ] Decryption (FBE, incl. Xiaomi Weaver + Gatekeeper dual protectors)
 - [ ] ADB / MTP / sideload / fastbootd / OTG
 - [ ] Vibrator
@@ -65,9 +65,18 @@ decryption are confirmed working. Keep a copy of the stock `vendor_boot.img`
 ## Patches
 
 See `patches/PATCHES.md`: the 8 patches from the 14.1 era were checked one by
-one against 16.0 — only 3 still apply (drop git revision from the startup
-line, zstd ramdisk compression, Gatekeeper decryption); the other 5 are
-already fixed upstream in 16.0 and must not be re-added.
+one against 16.0 — only 2 still apply (drop git revision from the startup
+line, Gatekeeper decryption); the rest are already fixed upstream in 16.0
+and must not be re-added. The zstd ramdisk compression patch has been
+removed: stock uses lz4, and every zstd image failed to boot (see the
+adaptation notes below).
+
+## MediaTek adaptation notes
+
+The problems actually encountered during bring-up (why clean-built images
+never boot, ro.hardware being mt8799, the symbol-pairing audit for the
+repack merge, and more) are collected in
+[MEDIATEK-NOTES.en.md](MEDIATEK-NOTES.en.md).
 
 ## Credits
 
