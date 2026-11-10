@@ -12,8 +12,13 @@ with the reason so nobody re-adds them.
 | Patch | Status on 16.0 |
 |---|---|
 | `bootable_recovery/0001-drop-git-revision-from-startup-line.patch` | **Re-based.** Same cosmetic fix, new context: the 16.0 startup line uses `TWFunc::GetTwrpVersion().c_str()` instead of `TW_VERSION_STR`. |
-| `build_make/0001-compress-ramdisk-with-zstd.patch` | **Kept as-is.** The `BOARD_RAMDISK_USE_LZ4` block in 16.0 `core/Makefile` (lines 1099-1103) is identical to 14.1. Still needed: the lz4 vendor ramdisk was 65 MB and bootlooped; zstd halves it (GKI kernel has `CONFIG_RD_ZSTD=y`). |
 | `system_vold/0001-aidl-gatekeeper-and-other-protectors.patch` | **Rewritten for 16.0.** The AIDL Gatekeeper plumbing is already upstream (`Gatekeeper_Verify` tries AIDL first, then HIDL; `gatekeeper-V1-ndk` already linked), so this patch now only carries the turner-specific logic: `unwrapSyntheticPasswordBlob` used the *active* sp-handle for the keystore alias instead of the protector being tried; `Decrypt_User_Synth_Pass` takes an optional `handle_str`; `Decrypt_User_Other_Protectors` retries every protector with Gatekeeper data (`.secdis`) when the active (Weaver/NXP eSE) one fails. |
+
+## Removed after flash testing (do not re-add)
+
+| Patch | Why it was removed |
+|---|---|
+| `build_make/0001-compress-ramdisk-with-zstd.patch` | **Removed 2026-11-10.** Every zstd-compressed vendor_boot failed on the tablet (black screen / logo loop) on both bases, while both stock ramdisk fragments are lz4 legacy. The bootable route is lz4 throughout (`BOARD_RAMDISK_USE_LZ4`), and the repack route reuses the stock layout as-is; `CONFIG_RD_ZSTD=y` in the kernel config did not translate into a bootable zstd ramdisk. See `MEDIATEK-NOTES.md` section 2. |
 
 ## Dropped (already upstream in 16.0 — do not re-add)
 
