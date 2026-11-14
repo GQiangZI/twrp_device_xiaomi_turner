@@ -25,7 +25,6 @@ rothko（小米 14T Pro，同 MT6991 平台）设备树，是最接近的、可�
 - [x] 提取官方文件（DTB 533115 字节、vendor_boot 模块、vendor 文件）
 - [x] 旧底子（twrp-14.1 minimal manifest）编译成功，但刷到平板上黑屏
 - [x] YARP 底子编译成功（云端构建 v1–v5），但直出镜像刷机全部黑屏 / logo 循环，已改走原厂模板 repack 路线
-- [ ] 启动测试：repack v3 已通过全部静态验证，待刷机确认（屏幕 / 触摸 / 解密）
 - [ ] 解密（FBE，含小米 Weaver + Gatekeeper 双 protector）
 - [ ] ADB / MTP / sideload / fastbootd / OTG
 - [ ] 振动
