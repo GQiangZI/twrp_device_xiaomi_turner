@@ -1,14 +1,31 @@
-# TWRP device tree for Redmi K Pad (turner)
+# YARP Recovery for Redmi K Pad (turner)
 
-[中文](README.md)
+[简体中文](README.md)
 
-TWRP for the **Redmi K Pad / Xiaomi Pad Mini** (`turner`, MediaTek Dimensity 9400+),
-Android 16 / HyperOS 3. Built from scratch — no official TWRP exists for this tablet.
+**YARP Recovery** (TWRP 16.0 / GUI2) for the **Redmi K Pad / Xiaomi Pad Mini**
+(`turner`, MediaTek Dimensity 9400+). There is no official TWRP for this tablet;
+this is the first fully working third-party recovery for it.
 
-Based on **YARP**: TWRP-Test's `platform_manifest_twrp_aosp` (`twrp-16.0` branch,
-TWRP 3.7.1_16, GUI2/LVGL interface) + PR #42 (OTG hotplug fix). Adapted from the
-rothko (Xiaomi 14T Pro, same MT6991 platform) tree by cogan17, which is the
-closest working MediaTek reference.
+**v1.0 is out**: display, touch, **data decryption (pattern / PIN / password)**,
+OTG, MTP, ADB, haptics, backup & restore — all working, and the system boots
+normally after a decrypt session. Get the image from
+[Releases](../../releases); see [CHANGELOG.md](CHANGELOG.md) for details.
+
+## How it works
+
+Directly compiled images all black-screened on this device, so the release uses
+a **hybrid** build:
+
+- Stock HyperOS OS4 `vendor_boot` as the base (F0 and DTB stay stock;
+  the DTB is byte-identical)
+- The YARP (TWRP-Test `twrp-16.0` / GUI2) userspace in F1, with strict
+  library isolation
+- The crypto and touch HALs are started at runtime from the **installed
+  system**: KeyMint / Gatekeeper run inside the system's own mitee TEE, so
+  credential verification follows exactly the stock chain — the key to full
+  FBE decryption on this MediaTek platform
+- Full analysis, build materials and the per-version log live in the dev repo:
+  [YARP-KPAD-dev](https://github.com/GQiangZI/YARP-KPAD-dev)
 
 ## Device
 
@@ -16,70 +33,72 @@ closest working MediaTek reference.
 | --- | --- |
 | Codename | turner |
 | Models | 25079RPDCC (China), 25079RPDCG (Global) |
-| Chipset | MediaTek Dimensity 9400+ (MT6991) |
-| Display | 8.8" IPS LCD, 1880x3008, 165 Hz |
+| SoC | MediaTek Dimensity 9400+ (MT6991, ro.hardware = mt8799) |
+| Display | 8.8", 1880 × 3008, 165 Hz |
 | Battery | 7500 mAh, 67 W |
-| Stock firmware used | OS3.0.310.0.WAOCNXM (Android 16, China stable) |
+| Verified firmware | HyperOS OS4.0.3.0 (stable) |
 
-## Status
+## Feature status (v1.0)
 
-- [x] Stock blobs extracted (DTB 533115 bytes, vendor_boot modules, vendor blobs)
-- [x] Old base (twrp-14.1 minimal manifest) built, but black-screened on the tablet
-- [x] First YARP-base build succeeded (cloud builds v1–v5), but every clean-built image black-screened / logo-looped on the tablet; switched to repacking onto the stock image
-- [ ] Boot test: repack v3 passes the full static verification; flash test pending (display / touch / decryption)
-- [ ] Decryption (FBE, incl. Xiaomi Weaver + Gatekeeper dual protectors)
-- [ ] ADB / MTP / sideload / fastbootd / OTG
-- [ ] Vibrator
+- [x] GUI2 display and touch (Novatek NT36536E + Xiaomi touchfeature HAL)
+- [x] **Data decryption**: metadata + FBE (DE/CE), pattern / PIN / password,
+      verified by mitee Gatekeeper
+- [x] ADB / MTP / sideload / USB OTG storage
+- [x] Haptic feedback
+- [x] Backup / restore, partition management, Install Image for Vendor Boot / DTBO
+- [x] Boot-chain guard: flashable zips cannot write lk / preloader,
+      protecting the bootloader unlock
+- [ ] WiFi (not implemented; not needed for core recovery work)
 
-## How it is built
+## Download & install (prebuilt image)
 
-Two GitHub Actions workflows (no local AOSP sync needed):
-
-1. **Extract stock blobs** (`.github/workflows/extract-stock.yml`) — downloads the
-   official recovery ROM on the runner, dumps `boot`/`init_boot`/`vendor_boot`/
-   `vendor` from `payload.bin`, and commits the DTB, vendor_boot kernel modules,
-   first-stage fstab and vendor blobs to a `stock/<version>` branch.
-   Defaults: `OS3.0.310.0.WAOCNXM`, md5 `ec27187eb7bd6cab587f70cf1dfec582`.
-2. **Build TWRP** (`.github/workflows/build-twrp.yml`) — syncs TWRP-Test's
-   `platform_manifest_twrp_aosp` (`twrp-16.0`), merges PR #42, applies the
-   patches in `patches/`, builds `vendorbootimage` (`lunch twrp_turner`),
-   uploads `vendor_boot.img` as an artifact.
-
-## Test safely
-
-turner has no dedicated recovery partition; recovery lives in **vendor_boot**.
-`fastboot boot` can only boot a boot image (with a kernel), not a vendor_boot
-image, so testing means flashing it and rebooting to recovery:
+Requires an unlocked bootloader. turner has no separate recovery partition —
+recovery lives in **vendor_boot**, so **`fastboot boot` cannot be used**;
+flash it:
 
 ```sh
-fastboot flash vendor_boot vendor_boot.img
+fastboot flash vendor_boot YARP-turner-K_PAD-vendor_boot-46428cf2.img
 fastboot reboot recovery
 ```
 
-The bootloader must be unlocked first (Xiaomi unlock takes a 168-hour wait and
-wipes all data). Only keep the flashed vendor_boot once display, touch and
-decryption are confirmed working. Keep a copy of the stock `vendor_boot.img`
-(the extract workflow uploads it as an artifact) to restore with
-`fastboot flash vendor_boot <stock vendor_boot.img>`.
+- Keep a stock `vendor_boot.img` handy; flash it back the same way to revert
+- Do not flash lk / preloader from a full stock package (it can re-lock the
+  bootloader). The recovery guards its own zip installs, but full-package
+  flashing tools are outside that guard
+- SHA256: `e9ede605818609f9cbb7725feef7bbfc0490b15200f2d88d85ee87051af3714a`
+
+## Building (device tree)
+
+This repo is the turner TWRP device tree, with two GitHub Actions workflows
+(no local source sync needed):
+
+1. **Extract stock files** (`.github/workflows/extract-stock.yml`) — downloads
+   the stock recovery ROM and pulls boot / init_boot / vendor_boot / vendor
+   out of `payload.bin` into a `stock/<version>` branch.
+2. **Build TWRP** (`.github/workflows/build-twrp.yml`) — syncs TWRP-Test's
+   `platform_manifest_twrp_aosp` (`twrp-16.0`), merges PR #42, applies the
+   patches in `patches/`, and builds `vendorbootimage` (`lunch twrp_turner`).
+
+Note: tree-built images black-screen on this device (see MEDIATEK-NOTES);
+the release image is assembled with the hybrid method above, and its
+materials live in the dev repo.
 
 ## Patches
 
-See `patches/PATCHES.md`: the 8 patches from the 14.1 era were checked one by
-one against 16.0 — only 2 still apply (drop git revision from the startup
-line, Gatekeeper decryption); the rest are already fixed upstream in 16.0
-and must not be re-added. The zstd ramdisk compression patch has been
-removed: stock uses lz4, and every zstd image failed to boot (see the
-adaptation notes below).
+See `patches/PATCHES.md`.
 
-## MediaTek adaptation notes
+## MediaTek porting notes
 
-The problems actually encountered during bring-up (why clean-built images
-never boot, ro.hardware being mt8799, the symbol-pairing audit for the
-repack merge, and more) are collected in
-[MEDIATEK-NOTES.en.md](MEDIATEK-NOTES.en.md).
+Real-world porting issues (why direct builds don't boot, ro.hardware being
+mt8799, symbol-pairing audits during repacks) are collected in
+[MEDIATEK-NOTES.md](MEDIATEK-NOTES.en.md); the full crypto-stack audit is in
+the dev repo at `hybrid/decrypt-stack/FINDINGS.md`.
 
 ## Credits
 
-- cogan17 / JonesqPacMan — the rothko tree this one is adapted from
-- lingqiqi — YARP (TWRP 3.7.1_16 + GUI2)
+- cogan17 / JonesqPacMan — authors of the rothko device tree this one adapts
+- lingqiqi, YuKongA and the TWRP-Test org — YARP (TWRP 3.7.1_16 + GUI2)
+- kirklin — Skyward Recovery; 小智乃敲可爱 — the Skyward turner port whose
+  image validated the hardware path this project builds on
+- kodeaqua — taiko TWRP, the first public mitee decryption precedent
 - TeamWin Recovery Project
