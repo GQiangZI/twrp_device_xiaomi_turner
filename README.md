@@ -83,10 +83,7 @@ repack 合并时的符号配对审计等）集中记录在 [MEDIATEK-NOTES.md](M
 联发科解密栈的完整审计在开发仓库的 `hybrid/decrypt-stack/FINDINGS.md`。
 
 ## 致谢
-
-- cogan17 / JonesqPacMan——本设备树所改编的 rothko 设备树作者
 - lingqiqi、YuKongA 等——YARP（TWRP 3.7.1_16 + GUI2）与 TWRP-Test 组织
-- kirklin——Skyward Recovery 作者；小智乃敲可爱——Skyward 的 turner 适配，
   其镜像是本项目硬件通路的验证起点
 - kodeaqua——taiko TWRP，首个公开的 mitee 解密先例
 - TeamWin Recovery Project
