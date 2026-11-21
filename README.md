@@ -6,7 +6,7 @@
 >
 > 本项目已完成：显示、触控、**数据解密（图案 / PIN / 密码）**、OTG、MTP、ADB、振动、备份恢复全部实机打通，解密后退出可正常进系统。
 >
-> 👉 **成品镜像请去正式仓库下载**：[GQiangZI/twrp_device_xiaomi_turner — Releases](https://github.com/GQiangZI/twrp_device_xiaomi_turner/releases)，镜像 `YARP-turner-K_PAD-vendor_boot-46428cf2.img`，SHA256 `e9ede605818609f9cbb7725feef7bbfc0490b15200f2d88d85ee87051af3714a`。
+> 👉 **成品镜像请去正式仓库下载**：[GQiangZI/twrp_device_xiaomi_turner — Releases](https://github.com/GQiangZI/twrp_device_xiaomi_turner/releases)，镜像 `YARP-turner-K.PAD-vendor_boot-46428cf2.img`，SHA256 `e9ede605818609f9cbb7725feef7bbfc0490b15200f2d88d85ee87051af3714a`。
 >
 > **本仓库是开发材料库**：拼接脚本、构建材料、逐版记录与解密栈审计都在这里；**不要直接刷本仓库里的任何中间产物**，它们不是发布镜像。
 
@@ -52,7 +52,7 @@
 ## 重要安全说明
 
 - **本仓库不提供可刷的成品镜像**。成品只在正式仓库的 Releases 发布，刷机前请核对 SHA256。
-- turner 没有独立 recovery 分区，Recovery 在 **vendor_boot** 里，**不能用 `fastboot boot` 测试**，只能刷入：`fastboot flash vendor_boot YARP-turner-K_PAD-vendor_boot-46428cf2.img`，然后 `fastboot reboot recovery`。
+- turner 没有独立 recovery 分区，Recovery 在 **vendor_boot** 里，**不能用 `fastboot boot` 测试**，只能刷入：`fastboot flash vendor_boot YARP-turner-K.PAD-vendor_boot-46428cf2.img`，然后 `fastboot reboot recovery`。
 - 刷前请先备一份原厂 `vendor_boot.img`，需要恢复时刷回即可；不要刷入原厂完整包里的 lk / preloader（可能导致重新上锁）。
 - 首次实机测试前应准备可核验的原厂镜像与恢复方案，并记录设备及固件版本；未经明确验证的产物只允许作为开发测试材料。
 - 安全与刷机前检查（中文）· English：见 `SAFETY.md` / `SAFETY.zh-CN.md`。

@@ -6,7 +6,7 @@
 >
 > This project is complete: display, touch, **data decryption (pattern / PIN / password)**, OTG, MTP, ADB, haptics, backup & restore are all verified on-device, and the system boots normally after a decrypt session.
 >
-> 👉 **Get the prebuilt image from the official repo**: [GQiangZI/twrp_device_xiaomi_turner — Releases](https://github.com/GQiangZI/twrp_device_xiaomi_turner/releases), image `YARP-turner-K_PAD-vendor_boot-46428cf2.img`, SHA256 `e9ede605818609f9cbb7725feef7bbfc0490b15200f2d88d85ee87051af3714a`.
+> 👉 **Get the prebuilt image from the official repo**: [GQiangZI/twrp_device_xiaomi_turner — Releases](https://github.com/GQiangZI/twrp_device_xiaomi_turner/releases), image `YARP-turner-K.PAD-vendor_boot-46428cf2.img`, SHA256 `e9ede605818609f9cbb7725feef7bbfc0490b15200f2d88d85ee87051af3714a`.
 >
 > **This repo is the development-materials archive**: build scripts, assembly materials, per-version records and the crypto-stack audit live here. **Do not flash any intermediate artifact from this repo** — none of them is the release image.
 
@@ -52,7 +52,7 @@ Directly compiled images all black-screened on this device, so the release uses 
 ## Important safety notes
 
 - **This repo ships no flashable release image.** Releases live only in the official repo; verify the SHA256 before flashing.
-- turner has no separate recovery partition — recovery lives in **vendor_boot**, so **`fastboot boot` cannot be used**; flash it: `fastboot flash vendor_boot YARP-turner-K_PAD-vendor_boot-46428cf2.img`, then `fastboot reboot recovery`.
+- turner has no separate recovery partition — recovery lives in **vendor_boot**, so **`fastboot boot` cannot be used**; flash it: `fastboot flash vendor_boot YARP-turner-K.PAD-vendor_boot-46428cf2.img`, then `fastboot reboot recovery`.
 - Keep a stock `vendor_boot.img` handy; flash it back the same way to revert. Do not flash lk / preloader from a full stock package (it can re-lock the bootloader).
 - Before any first device test, prepare a verifiable stock image and a recovery plan, and record the device and firmware version; unverified artifacts are test material only.
 - Safety & pre-flash checks: see `SAFETY.md` / `SAFETY.zh-CN.md`.
